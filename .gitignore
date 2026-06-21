@@ -1,2 +1,7 @@
 __pycache__
 trained_models
+results
+.conda
+.env
+local_*
+system_logs

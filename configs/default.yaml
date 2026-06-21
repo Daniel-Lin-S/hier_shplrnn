@@ -1,0 +1,48 @@
+model:
+  dimensions:
+    obs_size: 3
+    latent_size: null
+    hidden_size: 50
+    forcing_size: null
+  observation:
+    obs_model: identity
+    clipped: false
+    learn_noise_cov: false
+  hierarchy:
+    scheme: projection
+    num_individual_params: 10
+    lambda_regularization: 0.0
+
+training:
+  sequence:
+    seq_len: 30
+    train_set_size: 1000
+  optimization:
+    num_epochs: 5000
+    batch_size: 1024
+    batches_per_epoch: null
+    subjects_per_batch: null
+    num_workers: null
+    weight_decay: 0.0
+    clip_grad_norm: 0.0
+    learning_rate:
+      shared: 0.001
+      individual: null
+  teacher_forcing:
+    alpha_start: 0.1
+    alpha_end: null
+
+evaluation:
+  metrics:
+    enabled:
+      - kl
+      - pse
+    kl_bins: 30
+    pse_smooth: 15
+  plots:
+    enabled:
+      - pow
+      - hier
+
+runtime:
+  compile: false

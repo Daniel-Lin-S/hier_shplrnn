@@ -2,8 +2,8 @@ import torch
 from torch import nn
 from torch.optim import Adam
 from torch.optim.lr_scheduler import LambdaLR
-from tqdm import trange
 import os
+import time
 from argparse import Namespace
 from model import shallowPLRNN, nll_loss
 
@@ -26,7 +26,7 @@ def load_from_path(model, args, checkpoint=None):
     else:
         path = os.path.join(path, f'model_{checkpoint}.pt')
     # load
-    print(f'Loading model from {path}')
+    print(f'Loading model from {path}', flush=True)
     # load state dict (on specified device)
     statedict = torch.load(path, map_location=model.device)
     # remove '_orig_mod.' from keys, which are added by the torch compile function
@@ -114,9 +114,11 @@ class BPTT:
         """Trains the model."""
         # initiate train mode
         self.model.train()
-        # initialize progress bar
-        pbar = trange(self.args.num_epochs)
-        for e in pbar:
+        # initialize progress trackers
+        num_epochs = self.args.num_epochs
+        print_interval = max(1, num_epochs // 10)
+        start_time = time.time()
+        for e in range(num_epochs):
             self.model.hierarchisation_scheme.step = e+1
             epoch_losses = {'rnn': 0, 'hier': 0}
             dloader = self.dataset.get_dataloader(batch_size=self.args.batch_size, bpe=self.bpe)
@@ -132,7 +134,7 @@ class BPTT:
                 self.individual_optimizer.zero_grad()
                 # calculate losses
                 rnn_loss = self.criterion(prediction, target, self.model.noise_cov[subject])
-                hier_loss = torch.tensor(0)
+                hier_loss = torch.tensor(0, device=self.args.device)
                 if self.args.lam > 0:
                     hier_loss = self.args.lam*self.model.hierarchisation_scheme.loss()
                 # backpropagate
@@ -149,7 +151,13 @@ class BPTT:
             # update progress bar
             for k, _ in epoch_losses.items():
                 epoch_losses[k] /= len(dloader)
-            pbar.set_postfix({'loss': sum(epoch_losses.values())})
+            
+            # log progress every 10%
+            if (e + 1) % print_interval == 0 or e == 0 or e == num_epochs - 1:
+                total_loss = sum(epoch_losses.values())
+                elapsed = time.time() - start_time
+                print(f"Epoch {e+1}/{num_epochs} - Loss: {total_loss:.6f} - Time: {elapsed:.2f}s", flush=True)
+
             # update lr
             self.shared_scheduler.step()
             self.individual_scheduler.step()
@@ -159,17 +167,25 @@ class BPTT:
             # save model, stats and plots
             self.model.saver.save_loss(e+1, epoch_losses)
             if (e+1)%500 == 0:
+                eval_start = time.time()
                 self.model.saver.save_expensive(e+1)
+                eval_elapsed = time.time() - eval_start
+                print(f"--- Expensive evaluation (epoch {e+1}) took {eval_elapsed:.2f}s ---", flush=True)
             elif (e+1)%100 == 0:
+                eval_start = time.time()
                 self.model.saver.save_cheap(e+1)
+                eval_elapsed = time.time() - eval_start
+                print(f"--- Cheap evaluation (epoch {e+1}) took {eval_elapsed:.2f}s ---", flush=True)
     
     def finetune(self):
         """Finetunes a model. Copied train method but with only the individual optimizer."""
         # initiate train mode
         self.model.train()
-        # initialize progress bar
-        pbar = trange(self.args.num_epochs)
-        for e in pbar:
+        # initialize progress trackers
+        num_epochs = self.args.num_epochs
+        print_interval = max(1, num_epochs // 10)
+        start_time = time.time()
+        for e in range(num_epochs):
             self.model.hierarchisation_scheme.step = e+1
             epoch_losses = {'rnn': 0, 'hier': 0}
             dloader = self.dataset.get_dataloader(batch_size=self.args.batch_size, bpe=self.bpe)
@@ -187,7 +203,7 @@ class BPTT:
                 self.individual_optimizer.zero_grad()
                 # calculate losses
                 rnn_loss = self.criterion(prediction, target, self.model.noise_cov[subject])
-                hier_loss = torch.tensor(0)
+                hier_loss = torch.tensor(0, device=self.args.device)
                 if self.args.lam > 0:
                     hier_loss = self.args.lam*self.model.hierarchisation_scheme.loss()
                 # backpropagate
@@ -203,7 +219,13 @@ class BPTT:
             # update progress bar
             for k, _ in epoch_losses.items():
                 epoch_losses[k] /= len(dloader)
-            pbar.set_postfix({'loss': sum(epoch_losses.values())})
+
+            # log progress every 10%
+            if (e + 1) % print_interval == 0 or e == 0 or e == num_epochs - 1:
+                total_loss = sum(epoch_losses.values())
+                elapsed = time.time() - start_time
+                print(f"Finetune Epoch {e+1}/{num_epochs} - Loss: {total_loss:.6f} - Time: {elapsed:.2f}s", flush=True)
+
             # update lr
             self.individual_scheduler.step()
             # update tf parameter
@@ -211,7 +233,13 @@ class BPTT:
             self.model.saver.writer.add_scalar('tf_alpha', self.model.tf_alpha, e+1)
             # save model, stats and plots
             self.model.saver.save_loss(e+1, epoch_losses)
-            if (e+1)%500 == 0:
+            if (e+1) % 500 == 0:   # expensive evaluation every 500 epochs
+                eval_start = time.time()
                 self.model.saver.save_expensive(e+1)
-            elif (e+1)%100 == 0:
+                eval_elapsed = time.time() - eval_start
+                print(f"--- Expensive evaluation (epoch {e+1}) took {eval_elapsed:.2f}s ---", flush=True)
+            elif (e+1) % 100 == 0:   # cheap evaluation every 100 epochs
+                eval_start = time.time()
                 self.model.saver.save_cheap(e+1)
+                eval_elapsed = time.time() - eval_start
+                print(f"--- Cheap evaluation (epoch {e+1}) took {eval_elapsed:.2f}s ---", flush=True)

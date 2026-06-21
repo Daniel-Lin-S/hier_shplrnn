@@ -17,8 +17,10 @@ class Argument:
         self.values = values
         self.add_to_name_as = add_to_name_as
         if len(values) > 1:
-            print_statement = 'please specify a name addition for argument {}, because it has more than one value'.format(
-                name)
+            print_statement = (
+                "please specify a name addition for argument {}, "
+                "because it has more than one value"
+            ).format(name)
             if name != 'run':
                 assert add_to_name_as is not None, print_statement
 
@@ -97,17 +99,17 @@ def check_arguments_for_gpu(args: List[Argument]) -> bool:
     for arg in args:
         if arg.name == 'device_id':
             print("Device id(s) specified by user "
-                  "-> manual task distribution")
+                  "-> manual task distribution", flush=True)
             return False
         elif arg.name == 'use_gpu':
             if  not 0 in arg.values:
                 assert tc.cuda.is_available(),  \
                     "CUDA is not available."
-                print("'use_gpu' flag is set.")
+                print("'use_gpu' flag is set.", flush=True)
                 use_gpu = True
     if use_gpu and tc.cuda.is_available():
         print("Will distribute tasks to GPUs "
-              "automatically.")
+              "automatically.", flush=True)
     return use_gpu
 
 
@@ -139,13 +141,13 @@ def distribute_tasks_across_gpus(tasks: List[Task],
     if sz < n_cpu:
         print("There are not enough GPU Resources available to spawn "
               f"{n_cpu} processes. Reducing number of parallel runs "
-              f"to {sz}")
+              f"to {sz}", flush=True)
         new_n_cpu = sz
     else:
         new_n_cpu = n_cpu
 
     # distribute devices across tasks
-    new_tasks = []
+    new_tasks: List[Task] = []
     idx = 0
     for task in tasks:
         arg = Argument('device_id', [device_distribution[idx]])

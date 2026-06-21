@@ -4,6 +4,8 @@ from eval.pse import compute_and_smooth_power_spectrum, power_spectrum_error
 from eval.klx import state_space_divergence_binning, state_space_divergence_gmm
 from eval.scyfi import metric as scyfi
 
+import warnings
+
 
 class Evaluator(object):
     """Class for evaluating a model."""
@@ -104,7 +106,7 @@ class Evaluator(object):
                 fps.append(scyfi(A, W1, W2, h1, h2)[0,:,0])
             except IndexError:
                 fps.append(None)
-                print('Something went wrong in the computation of the fixed points. (Probably did not find any).')
+                warnings.warn('Something went wrong in the computation of the fixed points. (Probably did not find any).')
         self.fps = fps
     
     def get_power_spectrum(self):

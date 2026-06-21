@@ -108,7 +108,7 @@ class Saver:
     @torch.compiler.disable()
     def save_loss(self, epoch, losses):
         for key, val in losses.items():
-            self.writer.add_scalar(f'_loss/{key}', val, epoch)
+            self.writer.add_scalar(f'loss/{key}', val, epoch)
     
     @torch.compiler.disable()
     def save_pse(self, epoch):
