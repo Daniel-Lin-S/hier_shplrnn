@@ -1,4 +1,4 @@
-"""Evaluate trained hierarchical PLRNN checkpoints and export summary metrics.
+"""Evaluate hierarchical checkpoints and run latent-space benchmarks.
 
 Outputs
 -------
@@ -9,23 +9,27 @@ Output files include:
 - ``dstsp``: state-space divergence value.
 - ``pse``: power-spectrum error value.
 - ``subject_features.csv``: extracted per-subject feature vectors.
-- ``subject_feature_pca_<run>.png``: 2D PCA scatter with principal-component arrows.
+
+If ``--run_latent_benchmark`` is enabled, this script evaluates latent-space
+classifiability and information content for configured feature extractors and
+writes one result folder per extractor under the configured benchmark root.
 """
 
 import argparse
+import importlib.util
 import multiprocessing
 import os
 import re
-from typing import Any, cast
+from pathlib import Path
+from typing import Any, Mapping, cast
 
 import numpy as np
 import pandas as pd
 import torch
 
 from trainers.bptt import load_from_path, read_hypers
-from config_loader import apply_main_eval_config
-from visualisation.eval_plotter import plot_subject_feature_pca
-from main import get_device, get_dataset
+from config_loader import apply_main_eval_config, load_config
+from eval.latent_benchmark import benchmark_config_from_files, run_latent_benchmark
 from models.hier_shplrnn import shallowPLRNN
 from multitasking import get_current_gpu_utilization
 
@@ -53,7 +57,7 @@ def parse_args() -> argparse.Namespace:
     io_group.add_argument(
         "--model_path",
         type=str,
-        required=True,
+        default=None,
         help="Path to pretrained model run or experiment root.",
     )
     io_group.add_argument(
@@ -65,8 +69,11 @@ def parse_args() -> argparse.Namespace:
     io_group.add_argument(
         "--save_path",
         type=str,
-        default="./results/experiment",
-        help="Directory to save evaluation outputs.",
+        default=None,
+        help=(
+            "Directory to save evaluation outputs in legacy mode. "
+            "In benchmark mode, this optionally overrides evaluation.benchmark.save_path from config."
+        ),
     )
     io_group.add_argument(
         "--subject_labels_path",
@@ -82,17 +89,118 @@ def parse_args() -> argparse.Namespace:
         default="subject_features.csv",
         help="Filename for exported subject feature vectors.",
     )
-    output_group.add_argument(
-        "--subject_feature_pca_prefix",
-        type=str,
-        default="subject_feature_pca",
-        help="Filename prefix for per-run PCA plots.",
-    )
-
     runtime_group = parser.add_argument_group("Runtime")
     runtime_group.add_argument("--use_gpu", action="store_true", help="Use GPU when available.")
 
+    benchmark_group = parser.add_argument_group("Latent Benchmark")
+    benchmark_group.add_argument(
+        "--run_latent_benchmark",
+        action="store_true",
+        help=(
+            "Run latent-space benchmark for a model using separate shared/model YAML files."
+        ),
+    )
+    benchmark_group.add_argument(
+        "--benchmark_config",
+        type=str,
+        default=None,
+        help=(
+            "Path to shared benchmark YAML (dataset settings, CV, baseline specs). "
+            "Overrides evaluation.benchmark.shared_config_path from --config."
+        ),
+    )
+    benchmark_group.add_argument(
+        "--benchmark_model_config",
+        type=str,
+        default=None,
+        help=(
+            "Path to one-model benchmark YAML (single model extractor spec). "
+            "Overrides evaluation.benchmark.model_config_path from --config."
+        ),
+    )
+
     return parser.parse_args()
+
+
+def _legacy_get_device(args: argparse.Namespace) -> argparse.Namespace:
+    """Set device string for legacy hierarchical evaluation mode.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Legacy model argument namespace.
+
+    Returns
+    -------
+    argparse.Namespace
+        Namespace with ``device`` field populated.
+    """
+    args.device = "cpu"
+    if args.use_gpu:
+        args.device = "cuda" if torch.cuda.is_available() else "cpu"
+    if args.device == "cuda":
+        args.device = f"{args.device}:{args.device_id}"
+    print(f"Using device: {args.device}", flush=True)
+    return args
+
+
+def _legacy_get_dataset(args: argparse.Namespace) -> Any:
+    """Construct the training/evaluation dataset for legacy mode.
+
+    This loader avoids importing ``main.py`` directly, because ``io.dataset``
+    can collide with Python's built-in ``io`` module in some environments.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Legacy model argument namespace.
+
+    Returns
+    -------
+    Any
+        Instantiated ``MultiSubjectDataset`` object.
+    """
+    base_path = Path(__file__).resolve().parent
+    candidate_paths = [
+        base_path / "data_io" / "dataset.py",
+        base_path / "io" / "dataset.py",
+    ]
+    dataset_module_path: Path | None = None
+    for candidate_path in candidate_paths:
+        if candidate_path.exists():
+            dataset_module_path = candidate_path
+            break
+
+    if dataset_module_path is None:
+        raise FileNotFoundError(
+            "Could not locate a dataset module for legacy evaluation. "
+            f"Checked paths: {[str(path) for path in candidate_paths]}."
+        )
+
+    spec = importlib.util.spec_from_file_location("hierarchicaldsr_io_dataset", str(dataset_module_path))
+    if spec is None or spec.loader is None:
+        raise ImportError(
+            "Failed to create import specification for legacy dataset module "
+            f"'{dataset_module_path}'."
+        )
+
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    dataset_class = getattr(module, "MultiSubjectDataset", None)
+    if dataset_class is None:
+        raise AttributeError(
+            "Expected class 'MultiSubjectDataset' in legacy dataset module, "
+            f"but it was not found in '{dataset_module_path}'."
+        )
+
+    return dataset_class(
+        args.data_path,
+        args.seq_len,
+        args.train_set_size,
+        args.subjects_per_batch,
+        args.num_workers,
+        args.device,
+    )
 
 
 def handle_path(args: argparse.Namespace) -> list[str]:
@@ -181,6 +289,103 @@ def resolve_subject_labels_path(args: argparse.Namespace) -> str | None:
     if os.path.exists(candidate_path):
         return candidate_path
     return None
+
+
+def resolve_benchmark_config_paths(args: argparse.Namespace) -> tuple[str, str]:
+    """Resolve shared/model benchmark YAML paths.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Parsed CLI namespace.
+
+    Returns
+    -------
+    tuple[str, str]
+        Shared benchmark config path and per-model config path.
+
+    Raises
+    ------
+    ValueError
+        If one or both benchmark config paths are missing.
+    """
+    shared_path = args.benchmark_config
+    model_path = args.benchmark_model_config
+
+    if shared_path is not None and model_path is not None:
+        return shared_path, model_path
+
+    config_mapping = load_config(args.config)
+    benchmark_mapping = _read_benchmark_mapping(config_mapping)
+
+    if shared_path is None:
+        shared_path = _read_optional_non_empty_string(benchmark_mapping, "shared_config_path")
+    if model_path is None:
+        model_path = _read_optional_non_empty_string(benchmark_mapping, "model_config_path")
+
+    if shared_path is None or model_path is None:
+        raise ValueError(
+            "Latent benchmark requires both shared and model YAML paths. "
+            "Provide --benchmark_config and --benchmark_model_config, or set "
+            "evaluation.benchmark.shared_config_path and evaluation.benchmark.model_config_path "
+            f"in '{args.config}'."
+        )
+    return shared_path, model_path
+
+
+def _read_benchmark_mapping(config_mapping: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Read optional evaluation.benchmark mapping from a root config.
+
+    Parameters
+    ----------
+    config_mapping : Mapping[str, Any]
+        Parsed root YAML mapping.
+
+    Returns
+    -------
+    Mapping[str, Any]
+        Benchmark mapping or empty mapping if missing.
+    """
+    evaluation_mapping = config_mapping.get("evaluation")
+    if not isinstance(evaluation_mapping, Mapping):
+        return {}
+
+    benchmark_mapping = evaluation_mapping.get("benchmark")
+    if benchmark_mapping is None:
+        return {}
+    if not isinstance(benchmark_mapping, Mapping):
+        raise TypeError(
+            "Expected 'evaluation.benchmark' to be a mapping in main config, "
+            f"but got type '{type(benchmark_mapping).__name__}'."
+        )
+    return benchmark_mapping
+
+
+def _read_optional_non_empty_string(mapping: Mapping[str, Any], key: str) -> str | None:
+    """Read an optional non-empty string key.
+
+    Parameters
+    ----------
+    mapping : Mapping[str, Any]
+        Source mapping.
+    key : str
+        Key name.
+
+    Returns
+    -------
+    str | None
+        String value when present and non-empty, otherwise ``None``.
+    """
+    if key not in mapping:
+        return None
+    value = mapping[key]
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise TypeError(f"Expected '{key}' to be string when provided, but got {type(value).__name__}.")
+    if value.strip() == "":
+        return None
+    return value
 
 
 def load_subject_labels(labels_path: str, expected_num_subjects: int) -> np.ndarray:
@@ -305,8 +510,8 @@ def evaluate_model(
     modelargs.kl_bins = args.kl_bins
     modelargs.pse_smooth = args.pse_smooth
 
-    modelargs = get_device(modelargs)
-    dataset = get_dataset(modelargs)
+    modelargs = _legacy_get_device(modelargs)
+    dataset = _legacy_get_dataset(modelargs)
     model = shallowPLRNN(modelargs, dataset)
     load_from_path(model, worker_args)
     feature_vectors = extract_subject_feature_vectors(model)
@@ -322,7 +527,21 @@ def evaluate_model(
 def main() -> None:
     """Run multi-process evaluation over discovered model runs."""
     args = parse_args()
+
+    if args.run_latent_benchmark:
+        shared_config_path, model_config_path = resolve_benchmark_config_paths(args)
+        benchmark_config = benchmark_config_from_files(
+            shared_config_path,
+            model_config_path,
+            save_path_override=args.save_path,
+        )
+        run_latent_benchmark(benchmark_config)
+        return
+
     args = apply_main_eval_config(args)
+
+    if args.save_path is None:
+        args.save_path = "./results/experiment"
 
     # get all free GPUs
     if args.use_gpu:
@@ -362,7 +581,7 @@ def main() -> None:
     df.to_csv(os.path.join(args.save_path, 'results.csv'))
     print("Results saved to ", os.path.join(args.save_path, 'results.csv'), flush=True)
 
-    # export subject feature vectors and optionally generate PCA plots
+    # export subject feature vectors
     labels_path = resolve_subject_labels_path(args)
     labels: np.ndarray | None = None
     if labels_path is None:
@@ -395,11 +614,6 @@ def main() -> None:
             if labels is not None:
                 row["label"] = str(labels[subject_index])
             feature_rows.append(row)
-
-        if labels is not None:
-            run_name = _safe_run_name(p)
-            pca_path = os.path.join(args.save_path, f"{args.subject_feature_pca_prefix}_{run_name}.png")
-            plot_subject_feature_pca(feature_vectors, labels, p, pca_path)
 
     if not feature_rows:
         raise ValueError(

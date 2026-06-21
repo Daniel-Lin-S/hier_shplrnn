@@ -1,0 +1,7 @@
+model:
+  name: hier_shplrnn_finetuned
+  extractor: hier_shplrnn_finetuned
+  params:
+    model_path: ./trained_models/epileptic/hier-shPLRNN/003
+    expected_dim: 6   # 6 individual parameters in the hierarchical model
+    finetune_epochs: 75

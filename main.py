@@ -17,7 +17,7 @@ import torch
 
 from trainers.bptt import BPTT
 from config_loader import apply_main_config
-from io.dataset import MultiSubjectDataset
+from data_io.dataset import MultiSubjectDataset
 
 torch.set_num_threads(1)
 torch.set_float32_matmul_precision('high')

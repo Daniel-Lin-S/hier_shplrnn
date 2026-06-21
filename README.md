@@ -103,7 +103,7 @@ All keys below are defined in `configs/default.yaml`.
 
 - `runtime.compile` (`bool`): Enable `torch.compile` for model/training callable.
 
-## TensorBoard Visualization
+## TensorBoard Visualisation
 
 Training progress and model diagnostics are logged to TensorBoard. Panels are organized by metric category:
 
@@ -131,7 +131,7 @@ Training progress and model diagnostics are logged to TensorBoard. Panels are or
 ### Training
 
 ```bash
-./.conda/bin/python main.py \
+python main.py \
     --config ./configs/default.yaml \
     --data_path ./data/lorenz63/3params64sub/noisy.pt \
     --eval_data_path ./data/lorenz63/3params64sub/full.pt \
@@ -144,16 +144,28 @@ Training progress and model diagnostics are logged to TensorBoard. Panels are or
 Running multiple trainings, potentially in parallel, can still be done via:
 
 ```bash
-./.conda/bin/python ubermain.py
+python ubermain.py
 ```
 
 ### Evaluation
 
 ```bash
-./.conda/bin/python main_eval.py \
+python main_eval.py \
     --config ./configs/default.yaml \
     --model_path ./trained_models/lorenz63/projection \
     --save_path ./results/lorenz63
+```
+
+## Dataset
+
+To use a dataset from the Time Series Classification benchmark, please use `data_io/aeon_to_pt.py` to convert 
+
+```bash
+python data_io/aeon_to_pt.py \
+    --dataset_name EpilepticSeizures \
+    --split all \
+    --output_path ./data/epileptic/seizures_all.pt \
+    --save_auxiliary
 ```
 
 ## Citation

@@ -15,6 +15,7 @@ def plot_subject_feature_pca(
     labels: np.ndarray,
     run_path: str,
     output_path: str,
+    show_arrows: bool = False,
 ) -> None:
     """Plot a label-aware 2D PCA projection of subject feature vectors.
 
@@ -28,6 +29,8 @@ def plot_subject_feature_pca(
         Evaluated run path used for figure title context.
     output_path : str
         File path where the plot is written.
+    show_arrows : bool, optional
+        Whether principal-component loading arrows are drawn.
 
     Raises
     ------
@@ -126,30 +129,32 @@ def plot_subject_feature_pca(
                 label=f"label={label}",
             )
 
-    # Principal Component Arrows
-    max_score = np.max(np.linalg.norm(scores, axis=1))
-    if not np.isfinite(max_score) or max_score <= 0:
-        max_score = 1.0
-    arrow_scale = 0.7 * max_score
-    arrow_vectors = loadings * arrow_scale
+    arrow_vectors = np.empty((0, 2), dtype=np.float64)
+    if show_arrows:
+        max_score = np.max(np.linalg.norm(scores, axis=1))
+        if not np.isfinite(max_score) or max_score <= 0:
+            max_score = 1.0
 
-    for dim_index, (x_end, y_end) in enumerate(arrow_vectors):
-        ax.annotate(
-            "",
-            xy=(x_end, y_end),
-            xytext=(0.0, 0.0),
-            arrowprops={"arrowstyle": "->", "linewidth": 2.5, "color": "black"},
-        )
-        ax.text(
-            1.12 * x_end,
-            1.12 * y_end,
-            f"p{dim_index + 1}",
-            color="black",
-            fontsize=label_fs,
-            fontweight="bold",
-            ha="center",
-            va="center",
-        )
+        arrow_scale = 0.7 * max_score
+        arrow_vectors = loadings * arrow_scale
+
+        for dim_index, (x_end, y_end) in enumerate(arrow_vectors):
+            ax.annotate(
+                "",
+                xy=(x_end, y_end),
+                xytext=(0.0, 0.0),
+                arrowprops={"arrowstyle": "->", "linewidth": 2.5, "color": "black"},
+            )
+            ax.text(
+                1.12 * x_end,
+                1.12 * y_end,
+                f"p{dim_index + 1}",
+                color="black",
+                fontsize=label_fs,
+                fontweight="bold",
+                ha="center",
+                va="center",
+            )
 
     # Origin lines
     ax.axhline(0.0, color="black", linewidth=1.5, linestyle="--", alpha=0.3)
@@ -175,10 +180,11 @@ def plot_subject_feature_pca(
     ax.set_ylabel(f"PC2 ({explained[1]:.2f}% variance)", fontsize=label_fs)
     ax.tick_params(axis='both', which='major', labelsize=tick_fs)
 
-    title_text = (
-        "2D PCA Projection of Subject Feature Vectors with Principal-Component Arrows\n"
-        f"Run: {run_path}"
-    )
+    if show_arrows:
+        title_text = "2D PCA Projection of Subject Feature Vectors with Principal-Component Arrows\n"
+    else:
+        title_text = "2D PCA Projection of Subject Feature Vectors\n"
+    title_text += f"Run: {run_path}"
     # Wrap long titles and keep gap from figure
     wrapped_title = "\n".join(textwrap.wrap(title_text, width=70))
     ax.set_title(wrapped_title, fontsize=title_fs, pad=25)

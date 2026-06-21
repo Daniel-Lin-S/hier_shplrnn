@@ -36,6 +36,7 @@ pillow==11.1.0
 protobuf==5.29.3
 psutil==6.1.1
 pyparsing==3.2.1
+pycatch22==0.4.5
 PyYAML==6.0.3
 python-dateutil==2.9.0.post0
 scikit-learn==1.6.1

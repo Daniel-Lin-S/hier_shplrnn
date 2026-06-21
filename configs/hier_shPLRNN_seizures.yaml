@@ -36,6 +36,9 @@ evaluation:
     pse_smooth: 15
   plots:
     enabled: []  # no plotting
+  benchmark:
+    shared_config_path: ./configs/latent_benchmark_epileptic.yaml
+    model_config_path: ./configs/latent_model_hier_shplrnn.yaml
 
 runtime:
   compile: false

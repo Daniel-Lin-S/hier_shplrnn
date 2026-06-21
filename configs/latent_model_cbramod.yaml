@@ -1,0 +1,9 @@
+model:
+  name: cbramod_pretrained
+  extractor: cbramod_pretrained
+  params:
+    weights_path: ./trained_models/CBraMod/pretrained_weights.pth
+    input_rate_hz: 178
+    target_rate_hz: 200
+    patch_size: 200
+    device: cpu
