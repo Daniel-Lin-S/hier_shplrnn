@@ -1,8 +1,8 @@
 import torch
 import numpy as np
-from eval.pse import compute_and_smooth_power_spectrum, power_spectrum_error
-from eval.klx import state_space_divergence_binning, state_space_divergence_gmm
-from eval.scyfi import metric as scyfi
+from .pse import compute_and_smooth_power_spectrum, power_spectrum_error
+from .klx import state_space_divergence_binning, state_space_divergence_gmm
+from .scyfi import metric as scyfi
 
 import warnings
 

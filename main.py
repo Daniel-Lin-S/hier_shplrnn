@@ -15,9 +15,9 @@ import argparse
 
 import torch
 
-from bptt import BPTT
+from trainers.bptt import BPTT
 from config_loader import apply_main_config
-from dataset import MultiSubjectDataset
+from io.dataset import MultiSubjectDataset
 
 torch.set_num_threads(1)
 torch.set_float32_matmul_precision('high')

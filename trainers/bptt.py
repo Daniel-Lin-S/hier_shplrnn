@@ -5,7 +5,8 @@ from torch.optim.lr_scheduler import LambdaLR
 import os
 import time
 from argparse import Namespace
-from model import shallowPLRNN, nll_loss
+
+from models.hier_shplrnn import shallowPLRNN, nll_loss
 
 
 def load_from_path(model, args, checkpoint=None):

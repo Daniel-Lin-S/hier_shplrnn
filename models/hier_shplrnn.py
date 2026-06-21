@@ -1,8 +1,8 @@
 import torch
 from torch import nn
 from schemes.util import get_scheme_by_name
-from plotter import Plotter
-from evaluator import Evaluator
+from visualisation.plotter import Plotter
+from eval.evaluator import Evaluator
 import numpy as np
 from saving import Saver
 
@@ -16,7 +16,9 @@ def nll_loss(input, target, log_cov):
 class shallowPLRNN(nn.Module):
     def __init__(self, args, dataset):
         super(shallowPLRNN, self).__init__()
-        """Implementation of the shallow PLRNN model with hierarchical parameterization.
+        """
+        Implementation of the shallow PLRNN model with hierarchical parameterisation.
+
         Args:
             args: command line arguments
             dataset: dataset to train on, needed for plotting and evaluation
@@ -26,9 +28,11 @@ class shallowPLRNN(nn.Module):
         self.dx = args.obs_size
         self.dz = args.latent_size if args.latent_size is not None else self.dx
         self.df = args.forcing_size if args.forcing_size is not None else self.dz
+
         if args.obs_model == 'identity':
             # if identity observation model, can only force dx dimensions
             self.df = self.dx
+
         self.num_subjects = dataset.num_subjects
         # handle teacher forcing stuff
         self.tf_alpha = args.tf_alpha_start
