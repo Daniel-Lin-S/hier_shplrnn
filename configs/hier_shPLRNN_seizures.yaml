@@ -17,7 +17,7 @@ training:
     seq_len: 30  # 30 timepoints per segment (178 timepoints for each subject)
     train_set_size: 120
   optimization:
-    num_epochs: 100
+    num_epochs: 60
     batch_size: 320
     weight_decay: 0.0
     clip_grad_norm: 0.0

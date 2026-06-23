@@ -70,7 +70,7 @@ def edit_args(args, new_args):
     Args:
         args: The original args
         new_args: The new args"""
-    for name in ['data_path', 'eval_data_path', 'experiment', 'name', 'run', 'device']:
+    for name in ['data_path', 'eval_data_path', 'save_path', 'experiment', 'name', 'run', 'device']:
         if getattr(args, name) is not None:
             setattr(new_args, name, getattr(args, name))
     return new_args

@@ -11,7 +11,10 @@ from models.feature_extractors.baselines import (
     RawPCAFeatureExtractor,
 )
 from models.feature_extractors.cbramod import CBraModFeatureExtractor
-from models.feature_extractors.hier_shplrnn import HierShPLRNNFinetunedPVectorExtractor
+from models.feature_extractors.hier_shplrnn import (
+    HierShPLRNNFinetunedPVectorExtractor,
+    HierShPLRNNFromScratchPVectorExtractor,
+)
 
 FEATURE_EXTRACTOR_BUILDERS: dict[str, Callable[..., LatentFeatureExtractor]] = {}
 
@@ -39,6 +42,8 @@ def register_default_feature_extractors() -> None:
     register_feature_extractor("cbramod_pretrained", CBraModFeatureExtractor)
     register_feature_extractor("hier_shplrnn_finetuned", HierShPLRNNFinetunedPVectorExtractor)
     register_feature_extractor("hier_shplrnn_finetuned_pvector", HierShPLRNNFinetunedPVectorExtractor)
+    register_feature_extractor("hier_shplrnn_scratch", HierShPLRNNFromScratchPVectorExtractor)
+    register_feature_extractor("hier_shplrnn_train_from_scratch", HierShPLRNNFromScratchPVectorExtractor)
     register_feature_extractor("pca", RawPCAFeatureExtractor)
     register_feature_extractor("bandpower", BandPowerFeatureExtractor)
     register_feature_extractor("catch22", Catch22FeatureExtractor)

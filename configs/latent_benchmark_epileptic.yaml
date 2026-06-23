@@ -1,12 +1,12 @@
 benchmark:
   dataset_group: epileptic_80
   save_path: ./results/epileptic_latent_benchmark
-  train_data_path: ./local_data/epileptic/seizures_small.pt
-  train_labels_path: ./local_data/epileptic/seizures_small_labels.npy
-  test_data_path: ./local_data/epileptic/seizures_test.pt
-  test_labels_path: ./local_data/epileptic/seizures_test_labels.npy
-  total_test_samples: 80
-  balanced_test_selection: true
+  evaluation_datasets:
+    - name: epileptic_eval
+      data_path: ./local_data/epileptic/seizures_test.pt
+      labels_path: ./local_data/epileptic/seizures_test_labels.npy
+      total_samples: 80
+      balanced_binary_selection: true
   nested_cv_folds: 4
   random_state: 42
   cache_baselines_once_per_dataset_group: true

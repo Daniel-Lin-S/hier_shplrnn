@@ -46,46 +46,47 @@ class CBraModFeatureExtractor(LatentFeatureExtractor):
         self.device = device
         self.model: CBraMod | None = None
 
-    def fit(self, train_signals: np.ndarray, train_labels: np.ndarray) -> None:
-        """Load pre-trained CBraMod weights.
+    def _ensure_model_loaded(self) -> CBraMod:
+        """Load and cache the CBraMod model once.
 
-        Parameters
-        ----------
-        train_signals : np.ndarray
-            Training EEG tensor.
-        train_labels : np.ndarray
-            Training labels.
+        Returns
+        -------
+        CBraMod
+            Ready-to-use model instance.
         """
-        del train_signals, train_labels
+        if self.model is not None:
+            return self.model
 
         if not os.path.exists(self.weights_path):
             raise FileNotFoundError(
                 f"CBraMod weights file '{self.weights_path}' does not exist. "
                 "Please provide a valid pre-trained weight path."
             )
-        self.model = CBraMod.from_version("default")
-        self.model.load_pretrained_weights(self.weights_path, device=self.device, proj=False)
-        self.model.eval()
 
-    def transform(self, signals: np.ndarray, split_name: str) -> np.ndarray:
-        """Extract pooled CBraMod features.
+        model = CBraMod.from_version("default")
+        model.load_pretrained_weights(self.weights_path, device=self.device, proj=False)
+        model.eval()
+        self.model = model
+        return model
+
+    def extract(self, signals: np.ndarray, dataset_name: str | None = None) -> np.ndarray:
+        """Extract pooled CBraMod features from one evaluation dataset.
 
         Parameters
         ----------
         signals : np.ndarray
             EEG tensor in ``(samples, timesteps, channels)`` format.
-        split_name : str
-            Split identifier.
+        dataset_name : str | None, optional
+            Optional dataset identifier.
 
         Returns
         -------
         np.ndarray
             Feature matrix in ``(samples, d_model)`` format.
         """
-        del split_name
+        del dataset_name
 
-        if self.model is None:
-            raise RuntimeError("CBraMod extractor was not fitted before transform was called.")
+        model = self._ensure_model_loaded()
 
         patched_input = prepare_cbramod_input(
             signals,
@@ -96,7 +97,7 @@ class CBraModFeatureExtractor(LatentFeatureExtractor):
         patched_input = patched_input.to(self.device)
 
         with torch.no_grad():
-            features = self.model(patched_input, proj=False)
+            features = model(patched_input, proj=False)
 
         pooled = features.mean(dim=(1, 2)).detach().cpu().numpy().astype(np.float64)
         validate_feature_matrix(pooled, self.name)

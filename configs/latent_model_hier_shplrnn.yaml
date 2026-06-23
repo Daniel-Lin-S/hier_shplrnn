@@ -5,3 +5,5 @@ model:
     model_path: ./trained_models/epileptic/hier-shPLRNN/003
     expected_dim: 6   # 6 individual parameters in the hierarchical model
     finetune_epochs: 75
+    finetune_batches_per_epoch: 8
+    finetune_num_workers: 0

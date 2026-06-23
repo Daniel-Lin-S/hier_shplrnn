@@ -1,0 +1,6 @@
+model:
+  name: hier_shplrnn_scratch
+  extractor: hier_shplrnn_scratch
+  params:
+    config_path: ./configs/hier_shPLRNN_seizures.yaml
+    expected_dim: 6

@@ -26,56 +26,38 @@ class RawPCAFeatureExtractor(LatentFeatureExtractor):
         """
         self.n_components = n_components
         self.name = f"baseline_pca_{n_components}"
-        self.pipeline: Pipeline | None = None
 
-    def fit(self, train_signals: np.ndarray, train_labels: np.ndarray) -> None:
-        """Fit scaler and PCA pipeline.
-
-        Parameters
-        ----------
-        train_signals : np.ndarray
-            Training EEG tensor.
-        train_labels : np.ndarray
-            Training labels.
-        """
-        del train_labels
-
-        flat_train = flatten_signals(train_signals)
-        if self.n_components > flat_train.shape[1]:
-            raise ValueError(
-                "PCA component count exceeds flattened feature dimension: "
-                f"requested={self.n_components}, available={flat_train.shape[1]}."
-            )
-
-        self.pipeline = Pipeline(
-            steps=[
-                ("scaler", StandardScaler()),
-                ("pca", PCA(n_components=self.n_components, random_state=0)),
-            ]
-        )
-        self.pipeline.fit(flat_train)
-
-    def transform(self, signals: np.ndarray, split_name: str) -> np.ndarray:
-        """Project flattened windows into PCA features.
+    def extract(self, signals: np.ndarray, dataset_name: str | None = None) -> np.ndarray:
+        """Extract PCA features from one evaluation dataset.
 
         Parameters
         ----------
         signals : np.ndarray
-            EEG tensor.
-        split_name : str
-            Split identifier.
+            Evaluation EEG tensor.
+        dataset_name : str | None, optional
+            Optional dataset identifier.
 
         Returns
         -------
         np.ndarray
             PCA feature matrix.
         """
-        del split_name
+        del dataset_name
 
-        if self.pipeline is None:
-            raise RuntimeError("PCA extractor was not fitted before transform was called.")
+        flattened = flatten_signals(signals)
+        if self.n_components > flattened.shape[1]:
+            raise ValueError(
+                "PCA component count exceeds flattened feature dimension: "
+                f"requested={self.n_components}, available={flattened.shape[1]}."
+            )
 
-        features = self.pipeline.transform(flatten_signals(signals))
+        pipeline = Pipeline(
+            steps=[
+                ("scaler", StandardScaler()),
+                ("pca", PCA(n_components=self.n_components, random_state=0)),
+            ]
+        )
+        features = pipeline.fit_transform(flattened)
         validate_feature_matrix(features, self.name)
         return features
 
@@ -94,34 +76,22 @@ class BandPowerFeatureExtractor(LatentFeatureExtractor):
         self.name = "baseline_bandpower"
         self.sample_rate_hz = sample_rate_hz
 
-    def fit(self, train_signals: np.ndarray, train_labels: np.ndarray) -> None:
-        """No-op for deterministic handcrafted features.
-
-        Parameters
-        ----------
-        train_signals : np.ndarray
-            Training EEG tensor.
-        train_labels : np.ndarray
-            Training labels.
-        """
-        del train_signals, train_labels
-
-    def transform(self, signals: np.ndarray, split_name: str) -> np.ndarray:
-        """Extract log-bandpower features.
+    def extract(self, signals: np.ndarray, dataset_name: str | None = None) -> np.ndarray:
+        """Extract log-bandpower features for one evaluation dataset.
 
         Parameters
         ----------
         signals : np.ndarray
             EEG tensor.
-        split_name : str
-            Split identifier.
+        dataset_name : str | None, optional
+            Optional dataset identifier.
 
         Returns
         -------
         np.ndarray
             Bandpower feature matrix.
         """
-        del split_name
+        del dataset_name
 
         num_samples, num_timesteps, num_channels = signals.shape
         frequencies = np.fft.rfftfreq(num_timesteps, d=1.0 / float(self.sample_rate_hz))
@@ -163,17 +133,16 @@ class Catch22FeatureExtractor(LatentFeatureExtractor):
         self.name = "baseline_catch22"
         self.pycatch22_module: Any | None = None
 
-    def fit(self, train_signals: np.ndarray, train_labels: np.ndarray) -> None:
-        """Import pycatch22 module.
+    def _load_pycatch22(self) -> Any:
+        """Load pycatch22 dependency once.
 
-        Parameters
-        ----------
-        train_signals : np.ndarray
-            Training EEG tensor.
-        train_labels : np.ndarray
-            Training labels.
+        Returns
+        -------
+        Any
+            Imported ``pycatch22`` module.
         """
-        del train_signals, train_labels
+        if self.pycatch22_module is not None:
+            return self.pycatch22_module
 
         try:
             import pycatch22  # type: ignore
@@ -184,26 +153,26 @@ class Catch22FeatureExtractor(LatentFeatureExtractor):
             ) from exc
 
         self.pycatch22_module = pycatch22
+        return self.pycatch22_module
 
-    def transform(self, signals: np.ndarray, split_name: str) -> np.ndarray:
+    def extract(self, signals: np.ndarray, dataset_name: str | None = None) -> np.ndarray:
         """Extract catch22 features for each sample and channel.
 
         Parameters
         ----------
         signals : np.ndarray
             EEG tensor.
-        split_name : str
-            Split identifier.
+        dataset_name : str | None, optional
+            Optional dataset identifier.
 
         Returns
         -------
         np.ndarray
             Catch22 feature matrix.
         """
-        del split_name
+        del dataset_name
 
-        if self.pycatch22_module is None:
-            raise RuntimeError("Catch22 extractor was not fitted before transform was called.")
+        pycatch22 = self._load_pycatch22()
 
         num_samples, _, num_channels = signals.shape
         features = np.zeros((num_samples, num_channels * 22), dtype=np.float64)
@@ -212,7 +181,7 @@ class Catch22FeatureExtractor(LatentFeatureExtractor):
             channel_features: list[np.ndarray] = []
             for channel_index in range(num_channels):
                 series = signals[sample_index, :, channel_index].astype(np.float64)
-                result = self.pycatch22_module.catch22_all(series.tolist())
+                result = pycatch22.catch22_all(series.tolist())
                 values = np.asarray(result["values"], dtype=np.float64)
 
                 if values.shape[0] != 22:

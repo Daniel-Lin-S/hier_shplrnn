@@ -23,27 +23,15 @@ class LatentFeatureExtractor(abc.ABC):
         del output_dir
 
     @abc.abstractmethod
-    def fit(self, train_signals: np.ndarray, train_labels: np.ndarray) -> None:
-        """Fit extractor state using training split data.
-
-        Parameters
-        ----------
-        train_signals : np.ndarray
-            Training EEG tensor in ``(samples, timesteps, channels)`` format.
-        train_labels : np.ndarray
-            One-dimensional training label array.
-        """
-
-    @abc.abstractmethod
-    def transform(self, signals: np.ndarray, split_name: str) -> np.ndarray:
-        """Convert a split into latent feature vectors.
+    def extract(self, signals: np.ndarray, dataset_name: str | None = None) -> np.ndarray:
+        """Convert one evaluation dataset into latent feature vectors.
 
         Parameters
         ----------
         signals : np.ndarray
             EEG tensor in ``(samples, timesteps, channels)`` format.
-        split_name : str
-            Split identifier, typically ``"train"`` or ``"test"``.
+        dataset_name : str | None, optional
+            Optional evaluation dataset identifier from benchmark config.
 
         Returns
         -------
