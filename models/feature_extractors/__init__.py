@@ -8,6 +8,7 @@ from models.feature_extractors.baselines import (
 )
 from models.feature_extractors.cbramod import CBraModFeatureExtractor
 from models.feature_extractors.hier_shplrnn import (
+    HierShPLRNNCheckpointPVectorExtractor,
     HierShPLRNNFinetunedPVectorExtractor,
     HierShPLRNNFromScratchPVectorExtractor,
 )
@@ -21,6 +22,7 @@ __all__ = [
     "BandPowerFeatureExtractor",
     "CBraModFeatureExtractor",
     "Catch22FeatureExtractor",
+    "HierShPLRNNCheckpointPVectorExtractor",
     "HierShPLRNNFinetunedPVectorExtractor",
     "HierShPLRNNFromScratchPVectorExtractor",
     "LatentFeatureExtractor",

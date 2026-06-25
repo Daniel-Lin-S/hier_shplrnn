@@ -32,6 +32,7 @@ from config_loader import apply_main_eval_config, load_config
 from eval.latent_benchmark import benchmark_config_from_files, run_latent_benchmark
 from models.hier_shplrnn import shallowPLRNN
 from multitasking import get_current_gpu_utilization
+from visualisation.eval_plotter import plot_subject_feature_pca
 
 torch.set_num_threads(1)
 
@@ -625,6 +626,31 @@ def main() -> None:
     feature_csv_path = os.path.join(args.save_path, args.subject_feature_csv)
     feature_df.to_csv(feature_csv_path, index=False)
     print(f"Saved subject feature vectors to {feature_csv_path}", flush=True)
+
+    if labels is None:
+        print(
+            "Skipping subject feature PCA plots because labels are unavailable.",
+            flush=True,
+        )
+        return
+
+    for run_path, _, _, feature_vectors in results_list:
+        if feature_vectors.shape[1] < 2:
+            print(
+                f"Skipping PCA plot for run '{run_path}' because feature_dim={feature_vectors.shape[1]} < 2.",
+                flush=True,
+            )
+            continue
+
+        plot_filename = f"subject_feature_pca_{_safe_run_name(run_path)}.png"
+        plot_path = os.path.join(args.save_path, plot_filename)
+        plot_subject_feature_pca(
+            feature_vectors=feature_vectors,
+            labels=labels,
+            run_path=run_path,
+            output_path=plot_path,
+            show_arrows=False,
+        )
 
 if __name__ == "__main__":
     main()

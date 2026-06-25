@@ -1,6 +1,6 @@
 model:
-  name: hier_shplrnn_scratch
-  extractor: hier_shplrnn_scratch
+  name: hier_shplrnn_checkpoint_004
+  extractor: hier_shplrnn_checkpoint
   params:
-    config_path: ./configs/hier_shPLRNN_seizures.yaml
+    model_path: ./trained_models/epileptic/hier-shPLRNN/004
     expected_dim: 6

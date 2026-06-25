@@ -49,6 +49,20 @@ def load_config(config_path: str) -> dict[str, Any]:
     return config
 
 
+_PATH_SUFFIX_ALIASES: dict[tuple[str, ...], str] = {
+    ("learning_rate", "shared"): "learning_rate",
+    ("learning_rate", "individual"): "individual_learning_rate",
+    ("teacher_forcing", "alpha_start"): "tf_alpha_start",
+    ("teacher_forcing", "alpha_end"): "tf_alpha_end",
+    ("metrics", "enabled"): "metrics",
+    ("plots", "enabled"): "plots",
+    ("evaluation", "intervals", "cheap"): "cheap_eval_interval",
+    ("evaluation", "intervals", "expensive"): "expensive_eval_interval",
+    ("hierarchy", "scheme"): "hierarchisation_scheme",
+    ("hierarchy", "lambda_regularization"): "lam",
+}
+
+
 def apply_main_config(args: Namespace) -> Namespace:
     """Populate all model/training/evaluation parameters from YAML.
 
@@ -63,48 +77,7 @@ def apply_main_config(args: Namespace) -> Namespace:
         Updated namespace with configuration-backed parameters.
     """
     config = load_config(args.config)
-
-    flattened = _flatten_dict(config)
-    
-    # Special mappings for legacy names used in codebase
-    special_mappings = {
-        "model_dimensions_obs_size": "obs_size",
-        "model_dimensions_latent_size": "latent_size",
-        "model_dimensions_hidden_size": "hidden_size",
-        "model_dimensions_forcing_size": "forcing_size",
-        "model_observation_obs_model": "obs_model",
-        "model_observation_clipped": "clipped",
-        "model_observation_learn_noise_cov": "learn_noise_cov",
-        "model_hierarchy_scheme": "hierarchisation_scheme",
-        "model_hierarchy_num_individual_params": "num_individual_params",
-        "model_hierarchy_lambda_regularization": "lam",
-        "training_sequence_seq_len": "seq_len",
-        "training_sequence_train_set_size": "train_set_size",
-        "training_optimization_num_epochs": "num_epochs",
-        "training_optimization_batch_size": "batch_size",
-        "training_optimization_batches_per_epoch": "batches_per_epoch",
-        "training_optimization_subjects_per_batch": "subjects_per_batch",
-        "training_optimization_num_workers": "num_workers",
-        "training_optimization_learning_rate_shared": "learning_rate",
-        "training_optimization_learning_rate_individual": "individual_learning_rate",
-        "training_optimization_weight_decay": "weight_decay",
-        "training_optimization_clip_grad_norm": "clip_grad_norm",
-        "training_optimization_checkpoint_interval": "checkpoint_interval",
-        "training_teacher_forcing_alpha_start": "tf_alpha_start",
-        "training_teacher_forcing_alpha_end": "tf_alpha_end",
-        "evaluation_metrics_enabled": "metrics",
-        "evaluation_metrics_kl_bins": "kl_bins",
-        "evaluation_metrics_pse_smooth": "pse_smooth",
-        "evaluation_plots_enabled": "plots",
-        "evaluation_intervals_cheap": "cheap_eval_interval",
-        "evaluation_intervals_expensive": "expensive_eval_interval",
-        "runtime_compile": "compile"
-    }
-
-    for key, value in flattened.items():
-        # Get the internal name (either from mapping or by stripping prefixes)
-        internal_name = special_mappings.get(key, key)
-        setattr(args, internal_name, value)
+    _apply_config_to_namespace(args, config)
 
     _validate_main_args(args)
     return args
@@ -124,13 +97,11 @@ def apply_main_eval_config(args: Namespace) -> Namespace:
         Updated namespace with configuration-backed parameters.
     """
     config = load_config(args.config)
-    flattened = _flatten_dict(config)
-
-    args.compile = flattened.get("runtime_compile")
-    workers = flattened.get("optimization_num_workers")
-    args.num_workers = 10 if workers is None else workers
-    args.kl_bins = flattened.get("metrics_kl_bins")
-    args.pse_smooth = flattened.get("metrics_pse_smooth")
+    _apply_config_to_namespace(args, config)
+    
+    # Handle overrides/defaults specific to evaluation
+    if getattr(args, "num_workers", None) is None:
+        args.num_workers = 10
 
     if args.num_workers < 1:
         raise ValueError(
@@ -223,13 +194,48 @@ def _check_unknown_keys(base: Mapping[str, Any], overlay: Mapping[str, Any], pat
         elif isinstance(value, Mapping) and isinstance(base.get(key), Mapping):
             _check_unknown_keys(base[key], value, current_path)
 
-def _flatten_dict(d: dict[str, Any], parent_key: str = '', sep: str = '_') -> dict[str, Any]:
-    """Flatten a nested dictionary."""
-    items = []
-    for k, v in d.items():
-        new_key = f"{parent_key}{sep}{k}" if parent_key else k
-        if isinstance(v, dict):
-            items.extend(_flatten_dict(v, new_key, sep=sep).items())
-        else:
-            items.append((new_key, v))
-    return dict(items)
+
+def _apply_config_to_namespace(args: Namespace, config: Mapping[str, Any]) -> None:
+    """Recursively copy configuration leaves into the argument namespace.
+
+    The primary target name is the leaf key itself. A small set of path-suffix
+    aliases preserves legacy argument names for existing training/eval code.
+
+    Parameters
+    ----------
+    args : Namespace
+        Argument namespace to update.
+    config : Mapping[str, Any]
+        Nested configuration tree.
+    """
+
+    def visit(node: Mapping[str, Any], path: tuple[str, ...]) -> None:
+        for key, value in node.items():
+            new_path = (*path, key)
+            if isinstance(value, Mapping):
+                visit(value, new_path)
+                continue
+
+            attr_name = _resolve_attr_name(new_path)
+            setattr(args, attr_name, value)
+
+    visit(config, ())
+
+
+def _resolve_attr_name(path: tuple[str, ...]) -> str:
+    """Resolve argument name from configuration path.
+
+    Parameters
+    ----------
+    path : tuple[str, ...]
+        Path segments from config root to a leaf value.
+
+    Returns
+    -------
+    str
+        Namespace attribute name.
+    """
+    for suffix, alias in _PATH_SUFFIX_ALIASES.items():
+        if len(path) >= len(suffix) and path[-len(suffix):] == suffix:
+            return alias
+    return path[-1]

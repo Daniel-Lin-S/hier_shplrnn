@@ -1,3 +1,6 @@
+benchmark_overrides:
+  dataset_group: epileptic_small_progressive
+
 model_defaults:
   extractor: hier_shplrnn_finetuned
   params:
@@ -42,12 +45,8 @@ models:
     params:
       model_path: ./trained_models/epileptic_progressive/hier-shPLRNN_10240/001
 
-  - name: hier_shplrnn_scratch
-    extractor: hier_shplrnn_scratch
+  - name: hier_shplrnn_checkpoint_004
+    extractor: hier_shplrnn_checkpoint
     params:
-      config_path: ./configs/hier_shPLRNN_seizures.yaml
+      model_path: ./trained_models/epileptic/hier-shPLRNN/004
       expected_dim: 6
-      use_gpu: true
-      device_id: 0
-      cohort_subject_threshold: 80
-      batch_size_multiplier: 4

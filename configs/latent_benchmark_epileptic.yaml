@@ -3,8 +3,8 @@ benchmark:
   save_path: ./results/epileptic_latent_benchmark
   evaluation_datasets:
     - name: epileptic_eval
-      data_path: ./local_data/epileptic/seizures_test.pt
-      labels_path: ./local_data/epileptic/seizures_test_labels.npy
+      data_path: ./local_data/epileptic/seizures_large.pt
+      labels_path: ./local_data/epileptic/seizures_large_labels.npy
       total_samples: 80
       balanced_binary_selection: true
   nested_cv_folds: 4

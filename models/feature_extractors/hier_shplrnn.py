@@ -10,12 +10,15 @@ from typing import Any, cast
 import numpy as np
 import torch
 
-from config_loader import apply_main_config
 from data_io.dataset import MultiSubjectDataset
 from main import get_device as training_get_device
-from main import handle_defaults as training_handle_defaults
 from models.feature_extractors.base import LatentFeatureExtractor
-from models.feature_extractors.utils import cast_tensor, validate_feature_matrix
+from models.feature_extractors.utils import (
+    cast_tensor,
+    clean_state_dict_keys,
+    resolve_checkpoint_path,
+    validate_feature_matrix,
+)
 from models.hier_shplrnn import shallowPLRNN
 from trainers.bptt import BPTT, read_hypers
 
@@ -599,177 +602,128 @@ class HierShPLRNNFinetunedPVectorExtractor(_HierShPLRNNBPTTBaseExtractor):
         return args
 
 
-class HierShPLRNNFromScratchPVectorExtractor(_HierShPLRNNBPTTBaseExtractor):
-    """Train hier-shPLRNN from scratch and return learned p-vectors."""
+class HierShPLRNNCheckpointPVectorExtractor(_HierShPLRNNBPTTBaseExtractor):
+    """Load hier-shPLRNN p-vectors directly from a trained checkpoint."""
 
     def __init__(
         self,
-        config_path: str,
+        model_path: str,
         expected_dim: int = 6,
-        use_gpu: bool = False,
-        device_id: int = 0,
-        cohort_subject_threshold: int = DEFAULT_COHORT_SUBJECT_THRESHOLD,
-        batch_size_multiplier: int = DEFAULT_BATCH_SIZE_MULTIPLIER,
+        checkpoint: int | None = None,
     ) -> None:
-        """Initialize from-scratch p-vector extractor.
+        """Initialize checkpoint-based p-vector extractor.
 
         Parameters
         ----------
-        config_path : str
-            Training YAML path used by ``main.py``.
+        model_path : str
+            Path to a model run directory or a single ``.pt`` checkpoint.
         expected_dim : int, optional
             Expected p-vector dimensionality, by default 6.
-        use_gpu : bool, optional
-            Whether to request GPU execution, by default False.
-        device_id : int, optional
-            CUDA device id if ``use_gpu`` is enabled, by default 0.
-        cohort_subject_threshold : int, optional
-            Subject-count threshold used by adaptive batching. Small cohorts
-            use all subjects per iteration, while large cohorts sample this
-            many subjects per iteration. By default 80.
-        batch_size_multiplier : int, optional
-            Sequences per selected subject in one batch, by default 4.
+        checkpoint : int | None, optional
+            Explicit checkpoint epoch id when ``model_path`` is a directory.
+            If ``None``, the latest checkpoint in the directory is used.
         """
         super().__init__(
-            name="hier_shplrnn_scratch",
+            name="hier_shplrnn_checkpoint",
             expected_dim=expected_dim,
-            use_gpu=use_gpu,
-            device_id=device_id,
-            cohort_subject_threshold=cohort_subject_threshold,
-            batch_size_multiplier=batch_size_multiplier,
+            use_gpu=False,
+            device_id=0,
+            cohort_subject_threshold=DEFAULT_COHORT_SUBJECT_THRESHOLD,
+            batch_size_multiplier=DEFAULT_BATCH_SIZE_MULTIPLIER,
         )
-        self.config_path = config_path
+        self.model_path = model_path
+        self.checkpoint = checkpoint
         self._feature_cache: dict[str, np.ndarray] = {}
 
     def extract(self, signals: np.ndarray, dataset_name: str | None = None) -> np.ndarray:
-        """Train from scratch and return learned p-vectors.
+        """Load p-vectors from checkpoint and validate against evaluation batch.
 
         Parameters
         ----------
         signals : np.ndarray
             Evaluation EEG tensor.
         dataset_name : str | None, optional
-            Optional dataset identifier.
+            Optional dataset identifier used for cache keys.
 
         Returns
         -------
         np.ndarray
-            Learned p-vector matrix.
+            Subject feature matrix loaded from checkpoint.
         """
         cache_key = _dataset_token(dataset_name)
         if cache_key not in self._feature_cache:
-            self._feature_cache[cache_key] = self._extract_scratch_vectors(signals, dataset_name)
+            self._feature_cache[cache_key] = self._load_checkpoint_vectors()
 
         features = self._feature_cache[cache_key]
         self._validate_p_vectors(features, signals, dataset_name)
         return np.copy(features)
 
-    def _extract_scratch_vectors(self, signals: np.ndarray, dataset_name: str | None) -> np.ndarray:
-        """Run main.py-equivalent scratch training on evaluation signals.
+    def _resolve_checkpoint_file(self) -> str:
+        """Resolve checkpoint file path from extractor settings.
 
-        Parameters
-        ----------
-        signals : np.ndarray
-            Evaluation EEG tensor.
-        dataset_name : str | None
-            Optional dataset identifier.
+        Returns
+        -------
+        str
+            Checkpoint file path.
+        """
+        if self.checkpoint is None:
+            return resolve_checkpoint_path(self.model_path)
+
+        model_dir = Path(self.model_path)
+        if model_dir.is_file():
+            raise ValueError(
+                "Explicit 'checkpoint' cannot be combined with a direct checkpoint file path. "
+                f"Received model_path='{self.model_path}', checkpoint={self.checkpoint}."
+            )
+
+        checkpoint_path = model_dir / f"model_{int(self.checkpoint)}.pt"
+        if not checkpoint_path.exists():
+            raise FileNotFoundError(
+                "Could not find requested checkpoint file for extractor. "
+                f"Expected '{checkpoint_path}'."
+            )
+        return str(checkpoint_path)
+
+    def _load_checkpoint_vectors(self) -> np.ndarray:
+        """Load p-vectors from a model checkpoint.
 
         Returns
         -------
         np.ndarray
-            Learned p-vector matrix.
+            Feature matrix with shape ``(num_subjects, expected_dim)``.
         """
-        if signals.shape[0] <= 0:
-            raise ValueError("Expected at least one subject for scratch training, but received an empty tensor.")
-
-        with tempfile.TemporaryDirectory(prefix="hier_shplrnn_scratch_") as temp_dir:
-            data_path = Path(temp_dir) / f"{self.name}_{_dataset_token(dataset_name)}.pt"
-            torch.save(torch.as_tensor(signals, dtype=torch.float32), data_path)
-
-            args = self._build_scratch_args(
-                data_path=str(data_path),
-                dataset_name=dataset_name,
-                num_subjects=signals.shape[0],
+        checkpoint_file = self._resolve_checkpoint_file()
+        raw_state_dict = torch.load(checkpoint_file, map_location="cpu")
+        if not isinstance(raw_state_dict, dict):
+            raise TypeError(
+                "Expected checkpoint to contain a state_dict mapping, "
+                f"but got type {type(raw_state_dict).__name__} from '{checkpoint_file}'."
             )
-            dataset = self._build_dataset(args, signals.shape[0], dataset_name)
 
-            trainer = BPTT(args, dataset)
+        state_dict = clean_state_dict_keys(raw_state_dict)
+        if "p_vector" not in state_dict:
+            raise KeyError(
+                "Checkpoint does not contain 'p_vector'. "
+                f"Cannot extract subject features from '{checkpoint_file}'."
+            )
 
-            run_training = trainer.train
-            if args.compile:
-                run_training = torch.compile(run_training)
-            run_training()
+        p_vector = state_dict["p_vector"]
+        if not isinstance(p_vector, torch.Tensor):
+            raise TypeError(
+                "Expected checkpoint key 'p_vector' to be a torch.Tensor, "
+                f"but got type {type(p_vector).__name__} from '{checkpoint_file}'."
+            )
 
-            self._finalize_training_artifacts(trainer, args.num_epochs)
-
-            trained_model = cast(shallowPLRNN, trainer.model)
-            features = cast_tensor(cast(torch.Tensor, trained_model.p_vector))
-
-        return features
-
-    def _build_scratch_args(self, data_path: str, dataset_name: str | None, num_subjects: int) -> Namespace:
-        """Build runtime arguments exactly through ``main.py`` config flow.
-
-        Parameters
-        ----------
-        data_path : str
-            Temporary ``.pt`` path containing evaluation signals.
-        dataset_name : str | None
-            Optional dataset identifier.
-        num_subjects : int
-            Number of subjects in evaluation tensor.
-
-        Returns
-        -------
-        Namespace
-            Prepared scratch-training arguments.
-        """
-        args = Namespace(
-            config=self.config_path,
-            data_path=data_path,
-            eval_data_path=data_path,
-            save_path=None,
-            experiment=None,
-            name=None,
-            run=None,
-            finetune=False,
-            model_path=None,
-            checkpoint=None,
-            use_gpu=self.use_gpu,
-            device_id=self.device_id,
-        )
-
-        # Match main.py argument preparation exactly.
-        args = apply_main_config(args)
-        args = training_get_device(args)
-        args = training_handle_defaults(args)
-
-        args.data_path = data_path
-        args.eval_data_path = data_path
-        args.finetune = False
-        args.model_path = None
-        args.checkpoint = None
-
-        if args.num_epochs <= 0:
+        feature_vectors = cast_tensor(p_vector)
+        if feature_vectors.ndim != 2:
             raise ValueError(
-                f"Expected num_epochs > 0 from config '{self.config_path}', but got {args.num_epochs}."
+                "Expected checkpoint p-vectors to be a 2D matrix, "
+                f"but got shape {feature_vectors.shape} from '{checkpoint_file}'."
             )
-        if args.batch_size <= 0:
+        if feature_vectors.shape[1] != self.expected_dim:
             raise ValueError(
-                f"Expected batch_size > 0 from config '{self.config_path}', but got {args.batch_size}."
+                "Unexpected p-vector dimensionality loaded from checkpoint. "
+                f"expected_dim={self.expected_dim}, actual_dim={feature_vectors.shape[1]}, "
+                f"checkpoint='{checkpoint_file}'."
             )
-
-        args = self._configure_adaptive_batching(args, num_subjects=num_subjects, mode="scratch")
-
-        args = self._set_common_save_args(args, mode="scratch", dataset_name=dataset_name)
-
-        print(
-            "Running hier-shPLRNN scratch extraction with main.py flow: "
-            f"config='{self.config_path}', dataset='{dataset_name}', num_subjects={num_subjects}, "
-            f"num_epochs={args.num_epochs}, "
-            f"batch_size={args.batch_size}, subjects_per_batch={args.subjects_per_batch}, "
-            f"reshuffle_subjects_each_iteration={args.reshuffle_subjects_each_iteration}, "
-            f"batches_per_epoch={args.batches_per_epoch}, save_root='{args.save_path}'.",
-            flush=True,
-        )
-        return args
+        return feature_vectors
