@@ -3,6 +3,7 @@ from torch.utils.tensorboard import SummaryWriter
 from matplotlib import pyplot as plt
 import numpy as np
 import os
+import time
 
 
 def get_attr_names(args):
@@ -25,6 +26,8 @@ def get_attr_names(args):
         names.append('power_spectrum')
     if 'hier' in args.plots:
         names.append('hierarchisation_plots')
+    if 'trajectory' in args.plots:
+        names.append('trajectory')
     return names
 
 
@@ -41,14 +44,37 @@ class Saver:
         self.path = os.path.join(args.save_path, args.experiment, args.name, str(args.run).zfill(3))
         self.dataset = dataset
         self.num_subjects = dataset.num_subjects
-        # save a list of all metrics/plots that must be saved in each step
-        self.cheap = ['3D_trajectory', 'hovmoller', 'power_spectrum', 'hierarchisation_plots', 'pse']
-        self.expensive = get_attr_names(args)
-        self.cheap = [name for name in self.cheap if name in self.expensive]
-        # initialize tensorboard writer
+        selected = get_attr_names(args)
+        self.cheap, self.expensive = self._split_eval_groups(selected)
+
+        # intervals for periodic saving and evaluation
+        self.cheap_interval = args.cheap_eval_interval
+        self.expensive_interval = args.expensive_eval_interval
+        self.checkpoint_interval = args.checkpoint_interval
+
+        # initialise tensorboard writer
         self.writer = SummaryWriter(self.path, purge_step=0)
         # save args
         self.save_args(args)
+
+    @staticmethod
+    def _split_eval_groups(selected: list[str]) -> tuple[list[str], list[str]]:
+        """Split selected evaluation names into cheap and expensive groups.
+
+        Parameters
+        ----------
+        selected : list[str]
+            Metrics and plots requested by runtime args.
+
+        Returns
+        -------
+        tuple[list[str], list[str]]
+            Cheap and expensive evaluation names.
+        """
+        cheap_candidates = ['mse']
+        cheap = [name for name in cheap_candidates if name in selected]
+        expensive = [name for name in selected if name not in cheap]
+        return cheap, expensive
     
     def save_args(self, args):
         """Saves the args.
@@ -68,26 +94,42 @@ class Saver:
     def save_cheap(self, epoch):
         """Saves everything that is cheap to compute. So that it
         can be done frequently."""
-        self.save_model(epoch)
         if len(self.cheap) == 0:
             return
+
         self.model.eval()
+        eval_start = time.time()
         self.model.evaluator.compute_cheap(self.cheap)
-        self.save_trajectory(epoch)
+        eval_elapsed = time.time() - eval_start
+        print(f"--- Cheap metric computation took {eval_elapsed:.2f}s ---", flush=True)
+
+        if 'trajectory' in self.cheap:
+            self.save_trajectory(epoch)
+
         for name in self.cheap:
+            if name == 'trajectory':
+                continue
             getattr(self, f'save_{name}')(epoch)
     
     @torch.compiler.disable()
     def save_expensive(self, epoch):
         """Computes both expensive and cheap stuff. So as to only
         be called every now and then."""
-        self.save_model(epoch)
         if len(self.expensive) == 0:
             return
+
         self.model.eval()
+        eval_start = time.time()
         self.model.evaluator.compute_expensive(self.expensive)
-        self.save_trajectory(epoch)
+        eval_elapsed = time.time() - eval_start
+        print(f"--- Expensive metric computation took {eval_elapsed:.2f}s ---", flush=True)
+
+        if 'trajectory' in self.expensive:
+            self.save_trajectory(epoch)
+
         for name in self.expensive:
+            if name == 'trajectory':
+                continue
             getattr(self, f'save_{name}')(epoch)
     
     @torch.compiler.disable()
@@ -110,6 +152,25 @@ class Saver:
         for key, val in losses.items():
             self.writer.add_scalar(f'loss/{key}', val, epoch)
     
+    @torch.compiler.disable()
+    def save_periodic(self, epoch, is_final=False):
+        """Saves model and computes metrics/plots periodically.
+        Args:
+            epoch: current epoch
+            is_final: whether this is the final epoch
+        """
+        # 1. Checkpoint saving
+        if is_final:
+            self.save_model(epoch)
+        elif self.checkpoint_interval is not None and epoch % self.checkpoint_interval == 0:
+            self.save_model(epoch)
+
+        # 2. Evaluation
+        if epoch % self.expensive_interval == 0:
+            self.save_expensive(epoch)
+        elif epoch % self.cheap_interval == 0:
+            self.save_cheap(epoch)
+
     @torch.compiler.disable()
     def save_pse(self, epoch):
         pses = self.model.evaluator.get_pse()

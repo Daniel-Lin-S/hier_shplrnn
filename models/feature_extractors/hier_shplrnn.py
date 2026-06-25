@@ -19,6 +19,9 @@ from models.feature_extractors.utils import cast_tensor, validate_feature_matrix
 from models.hier_shplrnn import shallowPLRNN
 from trainers.bptt import BPTT, read_hypers
 
+DEFAULT_COHORT_SUBJECT_THRESHOLD = 80
+DEFAULT_BATCH_SIZE_MULTIPLIER = 4
+
 
 def _resolve_model_dir(model_path: str) -> str:
     """Resolve model run directory from a model path.
@@ -99,6 +102,8 @@ class _HierShPLRNNBPTTBaseExtractor(LatentFeatureExtractor):
         expected_dim: int,
         use_gpu: bool = False,
         device_id: int = 0,
+        cohort_subject_threshold: int = DEFAULT_COHORT_SUBJECT_THRESHOLD,
+        batch_size_multiplier: int = DEFAULT_BATCH_SIZE_MULTIPLIER,
     ) -> None:
         """Initialize shared extractor state.
 
@@ -112,11 +117,31 @@ class _HierShPLRNNBPTTBaseExtractor(LatentFeatureExtractor):
             Whether to request GPU execution, by default False.
         device_id : int, optional
             CUDA device id if ``use_gpu`` is enabled, by default 0.
+        cohort_subject_threshold : int, optional
+            Subject-count threshold used for adaptive batching. Small cohorts
+            train with all subjects per iteration, while larger cohorts sample
+            exactly this many subjects per iteration. By default
+            ``DEFAULT_COHORT_SUBJECT_THRESHOLD``.
+        batch_size_multiplier : int, optional
+            Number of sequence samples per selected subject, by default
+            ``DEFAULT_BATCH_SIZE_MULTIPLIER``.
         """
+        if expected_dim <= 0:
+            raise ValueError(f"Expected expected_dim > 0, but got {expected_dim}.")
+        if cohort_subject_threshold <= 0:
+            raise ValueError(
+                "Expected cohort_subject_threshold > 0, "
+                f"but got {cohort_subject_threshold}."
+            )
+        if batch_size_multiplier <= 0:
+            raise ValueError(f"Expected batch_size_multiplier > 0, but got {batch_size_multiplier}.")
+
         self.name = name
         self.expected_dim = expected_dim
         self.use_gpu = use_gpu
         self.device_id = device_id
+        self.cohort_subject_threshold = cohort_subject_threshold
+        self.batch_size_multiplier = batch_size_multiplier
         self._runtime_output_dir: Path | None = None
 
     def set_runtime_output_dir(self, output_dir: str) -> None:
@@ -202,7 +227,12 @@ class _HierShPLRNNBPTTBaseExtractor(LatentFeatureExtractor):
             )
         return dataset
 
-    def _finalize_training_artifacts(self, trainer: BPTT, num_epochs: int) -> None:
+    def _finalize_training_artifacts(
+        self,
+        trainer: BPTT,
+        num_epochs: int,
+        run_expensive_evaluation: bool = False,
+    ) -> None:
         """Flush saver artifacts similarly to regular training runs.
 
         Parameters
@@ -211,11 +241,19 @@ class _HierShPLRNNBPTTBaseExtractor(LatentFeatureExtractor):
             Trained BPTT instance.
         num_epochs : int
             Number of epochs that were run.
+        run_expensive_evaluation : bool, optional
+            Whether to run expensive evaluation before closing the writer,
+            by default False.
         """
         trained_model = cast(shallowPLRNN, trainer.model)
         saver = cast(Any, trained_model.saver)
-        saver.save_expensive(num_epochs)
-        saver.writer.close()
+        try:
+            if run_expensive_evaluation:
+                saver.save_expensive(num_epochs)
+            else:
+                saver.save_cheap(num_epochs)
+        finally:
+            saver.writer.close()
 
     def _validate_p_vectors(self, features: np.ndarray, signals: np.ndarray, dataset_name: str | None) -> None:
         """Validate output p-vectors against expectations.
@@ -294,6 +332,82 @@ class _HierShPLRNNBPTTBaseExtractor(LatentFeatureExtractor):
                     f"extractor='{self.name}', parameter_index={index}."
                 )
 
+    def _configure_adaptive_batching(
+        self,
+        args: Namespace,
+        num_subjects: int,
+        mode: str,
+    ) -> Namespace:
+        """Set batching policy for small and large cohorts.
+
+        Parameters
+        ----------
+        args : Namespace
+            Runtime argument namespace.
+        num_subjects : int
+            Number of subjects in current stage.
+        mode : str
+            Human-readable mode token used in logs.
+
+        Returns
+        -------
+        Namespace
+            Namespace with updated batching fields.
+        """
+        if num_subjects <= 0:
+            raise ValueError(f"Expected num_subjects > 0 for adaptive batching, but got {num_subjects}.")
+
+        if num_subjects <= self.cohort_subject_threshold:
+            args.subjects_per_batch = int(num_subjects)
+            args.batch_size = int(self.batch_size_multiplier * num_subjects)
+            args.reshuffle_subjects_each_iteration = False
+            sampling_strategy = "all_subjects_each_iteration"
+        else:
+            sampled_subjects = int(self.cohort_subject_threshold)
+            args.subjects_per_batch = int(sampled_subjects)
+            args.batch_size = int(self.batch_size_multiplier * sampled_subjects)
+            args.reshuffle_subjects_each_iteration = True
+            sampling_strategy = "random_subject_subset_per_iteration"
+
+        if args.batch_size <= 0:
+            raise ValueError(
+                "Adaptive batching produced non-positive batch size. "
+                f"mode='{mode}', num_subjects={num_subjects}, batch_size={args.batch_size}."
+            )
+
+        print(
+            "Applied adaptive batching policy: "
+            f"mode='{mode}', num_subjects={num_subjects}, batch_size={args.batch_size}, "
+            f"subjects_per_batch={args.subjects_per_batch}, strategy='{sampling_strategy}'.",
+            flush=True,
+        )
+        return args
+
+    def _resolve_run_dir(self, args: Namespace) -> Path:
+        """Resolve saver run directory for runtime arguments.
+
+        Parameters
+        ----------
+        args : Namespace
+            Runtime argument namespace.
+
+        Returns
+        -------
+        Path
+            Resolved run directory.
+        """
+        if getattr(args, "save_path", None) is None:
+            raise ValueError("Expected args.save_path to be set before resolving run directory.")
+        if getattr(args, "experiment", None) is None:
+            raise ValueError("Expected args.experiment to be set before resolving run directory.")
+        if getattr(args, "name", None) is None:
+            raise ValueError("Expected args.name to be set before resolving run directory.")
+        if getattr(args, "run", None) is None:
+            raise ValueError("Expected args.run to be set before resolving run directory.")
+
+        run = int(args.run)
+        return Path(str(args.save_path)) / str(args.experiment) / str(args.name) / f"{run:03d}"
+
 
 class HierShPLRNNFinetunedPVectorExtractor(_HierShPLRNNBPTTBaseExtractor):
     """Finetune individual parameters from a pretrained model and return p-vectors."""
@@ -307,6 +421,8 @@ class HierShPLRNNFinetunedPVectorExtractor(_HierShPLRNNBPTTBaseExtractor):
         finetune_num_workers: int = 0,
         use_gpu: bool = False,
         device_id: int = 0,
+        cohort_subject_threshold: int = DEFAULT_COHORT_SUBJECT_THRESHOLD,
+        batch_size_multiplier: int = DEFAULT_BATCH_SIZE_MULTIPLIER,
     ) -> None:
         """Initialise the finetuned p-vector extractor.
 
@@ -326,12 +442,20 @@ class HierShPLRNNFinetunedPVectorExtractor(_HierShPLRNNBPTTBaseExtractor):
             Whether to request GPU execution, by default False.
         device_id : int, optional
             CUDA device id if ``use_gpu`` is enabled, by default 0.
+        cohort_subject_threshold : int, optional
+            Subject-count threshold used by adaptive batching. Small cohorts
+            use all subjects per iteration, while large cohorts sample this
+            many subjects per iteration. By default 80.
+        batch_size_multiplier : int, optional
+            Sequences per selected subject in one batch, by default 4.
         """
         super().__init__(
             name="hier_shplrnn_finetuned",
             expected_dim=expected_dim,
             use_gpu=use_gpu,
             device_id=device_id,
+            cohort_subject_threshold=cohort_subject_threshold,
+            batch_size_multiplier=batch_size_multiplier,
         )
         self.model_path = _resolve_model_dir(model_path)
         self.finetune_epochs = finetune_epochs
@@ -443,10 +567,7 @@ class HierShPLRNNFinetunedPVectorExtractor(_HierShPLRNNBPTTBaseExtractor):
         args.num_epochs = int(self.finetune_epochs)
         args.batches_per_epoch = int(self.finetune_batches_per_epoch)
         args.num_workers = int(self.finetune_num_workers)
-
-        # Keep the finetune batching policy requested for benchmark adaptation.
-        args.subjects_per_batch = int(num_subjects)
-        args.batch_size = int(4 * num_subjects)
+        args = self._configure_adaptive_batching(args, num_subjects, mode="finetune")
 
         args.learning_rate = _normalize_learning_rate(getattr(args, "learning_rate", None))
         args.individual_learning_rate = args.learning_rate[1]
@@ -471,6 +592,7 @@ class HierShPLRNNFinetunedPVectorExtractor(_HierShPLRNNBPTTBaseExtractor):
             "Running hier-shPLRNN finetune extraction with parameters: "
             f"dataset='{dataset_name}', num_subjects={num_subjects}, num_epochs={args.num_epochs}, "
             f"batch_size={args.batch_size}, subjects_per_batch={args.subjects_per_batch}, "
+            f"reshuffle_subjects_each_iteration={args.reshuffle_subjects_each_iteration}, "
             f"batches_per_epoch={args.batches_per_epoch}, save_root='{args.save_path}'.",
             flush=True,
         )
@@ -486,6 +608,8 @@ class HierShPLRNNFromScratchPVectorExtractor(_HierShPLRNNBPTTBaseExtractor):
         expected_dim: int = 6,
         use_gpu: bool = False,
         device_id: int = 0,
+        cohort_subject_threshold: int = DEFAULT_COHORT_SUBJECT_THRESHOLD,
+        batch_size_multiplier: int = DEFAULT_BATCH_SIZE_MULTIPLIER,
     ) -> None:
         """Initialize from-scratch p-vector extractor.
 
@@ -499,12 +623,20 @@ class HierShPLRNNFromScratchPVectorExtractor(_HierShPLRNNBPTTBaseExtractor):
             Whether to request GPU execution, by default False.
         device_id : int, optional
             CUDA device id if ``use_gpu`` is enabled, by default 0.
+        cohort_subject_threshold : int, optional
+            Subject-count threshold used by adaptive batching. Small cohorts
+            use all subjects per iteration, while large cohorts sample this
+            many subjects per iteration. By default 80.
+        batch_size_multiplier : int, optional
+            Sequences per selected subject in one batch, by default 4.
         """
         super().__init__(
             name="hier_shplrnn_scratch",
             expected_dim=expected_dim,
             use_gpu=use_gpu,
             device_id=device_id,
+            cohort_subject_threshold=cohort_subject_threshold,
+            batch_size_multiplier=batch_size_multiplier,
         )
         self.config_path = config_path
         self._feature_cache: dict[str, np.ndarray] = {}
@@ -554,7 +686,11 @@ class HierShPLRNNFromScratchPVectorExtractor(_HierShPLRNNBPTTBaseExtractor):
             data_path = Path(temp_dir) / f"{self.name}_{_dataset_token(dataset_name)}.pt"
             torch.save(torch.as_tensor(signals, dtype=torch.float32), data_path)
 
-            args = self._build_scratch_args(data_path=str(data_path), dataset_name=dataset_name)
+            args = self._build_scratch_args(
+                data_path=str(data_path),
+                dataset_name=dataset_name,
+                num_subjects=signals.shape[0],
+            )
             dataset = self._build_dataset(args, signals.shape[0], dataset_name)
 
             trainer = BPTT(args, dataset)
@@ -571,7 +707,7 @@ class HierShPLRNNFromScratchPVectorExtractor(_HierShPLRNNBPTTBaseExtractor):
 
         return features
 
-    def _build_scratch_args(self, data_path: str, dataset_name: str | None) -> Namespace:
+    def _build_scratch_args(self, data_path: str, dataset_name: str | None, num_subjects: int) -> Namespace:
         """Build runtime arguments exactly through ``main.py`` config flow.
 
         Parameters
@@ -580,6 +716,8 @@ class HierShPLRNNFromScratchPVectorExtractor(_HierShPLRNNBPTTBaseExtractor):
             Temporary ``.pt`` path containing evaluation signals.
         dataset_name : str | None
             Optional dataset identifier.
+        num_subjects : int
+            Number of subjects in evaluation tensor.
 
         Returns
         -------
@@ -621,12 +759,16 @@ class HierShPLRNNFromScratchPVectorExtractor(_HierShPLRNNBPTTBaseExtractor):
                 f"Expected batch_size > 0 from config '{self.config_path}', but got {args.batch_size}."
             )
 
+        args = self._configure_adaptive_batching(args, num_subjects=num_subjects, mode="scratch")
+
         args = self._set_common_save_args(args, mode="scratch", dataset_name=dataset_name)
 
         print(
             "Running hier-shPLRNN scratch extraction with main.py flow: "
-            f"config='{self.config_path}', dataset='{dataset_name}', num_epochs={args.num_epochs}, "
+            f"config='{self.config_path}', dataset='{dataset_name}', num_subjects={num_subjects}, "
+            f"num_epochs={args.num_epochs}, "
             f"batch_size={args.batch_size}, subjects_per_batch={args.subjects_per_batch}, "
+            f"reshuffle_subjects_each_iteration={args.reshuffle_subjects_each_iteration}, "
             f"batches_per_epoch={args.batches_per_epoch}, save_root='{args.save_path}'.",
             flush=True,
         )

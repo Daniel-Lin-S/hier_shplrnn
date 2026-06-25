@@ -25,6 +25,7 @@ training:
     num_workers: null
     weight_decay: 0.0
     clip_grad_norm: 0.0
+    checkpoint_interval: 100
     learning_rate:
       shared: 0.001
       individual: null
@@ -43,6 +44,9 @@ evaluation:
     enabled:
       - pow
       - hier
+  intervals:
+    cheap: 100
+    expensive: 500
 
 runtime:
   compile: false

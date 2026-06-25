@@ -1,0 +1,18 @@
+progressive_training:
+  main_config_path: ./configs/hier_shPLRNN_seizures.yaml
+  source_data_path: ./local_data/epileptic/seizures_large.pt
+  subset_output_dir: ./local_data/epileptic/progressive_subsets
+  subset_prefix: seizures_large_subset
+  cohort_sizes: [80, 160, 320, 640, 1280, 2560, 5120, 10240]
+  random_seed: 42
+  nested_subsets: true
+  runs_per_size: 1
+  run_start: 1
+
+  save_path: ./trained_models
+  experiment: epileptic_progressive
+  model_name_prefix: hier-shPLRNN
+
+  force_retrain: false
+  use_gpu: true
+  device_id: 0

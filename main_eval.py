@@ -114,7 +114,8 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=None,
         help=(
-            "Path to one-model benchmark YAML (single model extractor spec). "
+            "Path to benchmark model YAML (single `model` or list `models` extractor specs, "
+            "optionally with `model_defaults`). "
             "Overrides evaluation.benchmark.model_config_path from --config."
         ),
     )

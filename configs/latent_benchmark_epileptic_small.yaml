@@ -1,0 +1,55 @@
+benchmark:
+  dataset_group: epileptic_small
+  save_path: ./results/epileptic_latent_benchmark
+  evaluation_datasets:
+    - name: epileptic_small
+      data_path: ./local_data/epileptic/seizures_small.pt
+      labels_path: ./local_data/epileptic/seizures_small_labels.npy
+      total_samples: 80
+      balanced_binary_selection: true
+  nested_cv_folds: 4
+  random_state: 42
+  cache_baselines_once_per_dataset_group: true
+  evaluate_baselines: true
+  ridge_alphas:
+    - 0.0001
+    - 0.00031622776601683794
+    - 0.001
+    - 0.0031622776601683794
+    - 0.01
+    - 0.03162277660168379
+    - 0.1
+    - 0.31622776601683794
+    - 1.0
+    - 3.1622776601683795
+    - 10.0
+    - 31.622776601683793
+    - 100.0
+    - 316.22776601683796
+    - 1000.0
+    - 3162.2776601683795
+    - 10000.0
+  pca_plot:
+    enabled: true
+    prefix: subject_feature_pca
+    show_arrows: false
+  baselines:
+    - name: baseline_pca_5
+      extractor: pca
+      params:
+        n_components: 5
+    - name: baseline_pca_10
+      extractor: pca
+      params:
+        n_components: 10
+    - name: baseline_pca_15
+      extractor: pca
+      params:
+        n_components: 15
+    - name: baseline_bandpower
+      extractor: bandpower
+      params:
+        sample_rate_hz: 178
+    - name: baseline_catch22
+      extractor: catch22
+      params: {}

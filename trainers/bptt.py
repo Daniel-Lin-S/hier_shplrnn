@@ -22,7 +22,13 @@ def load_from_path(model, args, checkpoint=None):
         cps = []
         for f in os.listdir(path):
             if f.split('.')[-1] == 'pt': cps.append(int(f.split('.')[0].split('_')[-1]))
-        assert len(cps) > 0, 'No model files found in specified folder.'
+
+        if len(cps) == 0:
+            raise ValueError(
+                f'No model files found in {path}.'
+                f' Available files: {os.listdir(path)}.'
+            )
+
         path = os.path.join(path, f'model_{max(cps)}.pt')
     else:
         path = os.path.join(path, f'model_{checkpoint}.pt')
@@ -111,6 +117,29 @@ class BPTT:
         # move model to device
         self.model.to(args.device)
 
+    def _should_reshuffle_subjects_each_iteration(self, default: bool) -> bool:
+        """Resolve whether to reshuffle subject subsets at each training iteration.
+
+        Parameters
+        ----------
+        default : bool
+            Fallback value when arguments do not provide an explicit override.
+
+        Returns
+        -------
+        bool
+            True if subject subsets should be reshuffled before each gradient step.
+        """
+        value = getattr(self.args, 'reshuffle_subjects_each_iteration', None)
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        raise TypeError(
+            "Expected 'reshuffle_subjects_each_iteration' to be bool when provided, "
+            f"but got {type(value).__name__}."
+        )
+
     def train(self):
         """Trains the model."""
         # initiate train mode
@@ -124,6 +153,8 @@ class BPTT:
             epoch_losses = {'rnn': 0, 'hier': 0}
             dloader = self.dataset.get_dataloader(batch_size=self.args.batch_size, bpe=self.bpe)
             for data, target, subject in dloader:
+                if self._should_reshuffle_subjects_each_iteration(default=False):
+                    self.dataset.shuffle_subjects()
                 # move data to device
                 data = data.to(self.args.device)
                 target = target.to(self.args.device)
@@ -167,16 +198,7 @@ class BPTT:
             self.model.saver.writer.add_scalar('tf_alpha', self.model.tf_alpha, e+1)
             # save model, stats and plots
             self.model.saver.save_loss(e+1, epoch_losses)
-            if (e+1)%500 == 0:
-                eval_start = time.time()
-                self.model.saver.save_expensive(e+1)
-                eval_elapsed = time.time() - eval_start
-                print(f"--- Expensive evaluation (epoch {e+1}) took {eval_elapsed:.2f}s ---", flush=True)
-            elif (e+1)%100 == 0:
-                eval_start = time.time()
-                self.model.saver.save_cheap(e+1)
-                eval_elapsed = time.time() - eval_start
-                print(f"--- Cheap evaluation (epoch {e+1}) took {eval_elapsed:.2f}s ---", flush=True)
+            self.model.saver.save_periodic(e+1, is_final=(e == num_epochs - 1))
     
     def finetune(self):
         """Finetunes a model. Copied train method but with only the individual optimizer."""
@@ -191,8 +213,7 @@ class BPTT:
             epoch_losses = {'rnn': 0, 'hier': 0}
             dloader = self.dataset.get_dataloader(batch_size=self.args.batch_size, bpe=self.bpe)
             for data, target, subject in dloader:
-                # if using subjects_per_batch, reshuffle the pool for next batch
-                if self.args.subjects_per_batch is not None:
+                if self._should_reshuffle_subjects_each_iteration(default=self.args.subjects_per_batch is not None):
                     self.dataset.shuffle_subjects()
                 # move data to device
                 data = data.to(self.args.device)
@@ -234,13 +255,4 @@ class BPTT:
             self.model.saver.writer.add_scalar('tf_alpha', self.model.tf_alpha, e+1)
             # save model, stats and plots
             self.model.saver.save_loss(e+1, epoch_losses)
-            if (e+1) % 500 == 0:   # expensive evaluation every 500 epochs
-                eval_start = time.time()
-                self.model.saver.save_expensive(e+1)
-                eval_elapsed = time.time() - eval_start
-                print(f"--- Expensive evaluation (epoch {e+1}) took {eval_elapsed:.2f}s ---", flush=True)
-            elif (e+1) % 100 == 0:   # cheap evaluation every 100 epochs
-                eval_start = time.time()
-                self.model.saver.save_cheap(e+1)
-                eval_elapsed = time.time() - eval_start
-                print(f"--- Cheap evaluation (epoch {e+1}) took {eval_elapsed:.2f}s ---", flush=True)
+            self.model.saver.save_periodic(e+1, is_final=(e == num_epochs - 1))

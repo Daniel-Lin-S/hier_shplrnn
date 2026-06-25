@@ -6,7 +6,7 @@ import json
 import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, Sequence, cast
 
 import numpy as np
 import pandas as pd
@@ -48,7 +48,38 @@ class EvaluationDatasetSpec:
 
 @dataclass(frozen=True)
 class BenchmarkConfig:
-    """Configuration values for latent-space benchmarking."""
+    """
+    Configuration values for latent-space benchmarking.
+
+    Parameters
+    ----------
+    dataset_group : str
+        Global identifier for this benchmark group (e.g. 'epileptic_small').
+    save_path : str
+        Root directory where all benchmark artifacts are saved.
+    evaluation_datasets : Sequence[EvaluationDatasetSpec]
+        List of dataset specifications to be evaluated.
+    nested_cv_folds : int
+        Number of folds for nested cross-validation in ridge classification.
+    ridge_alphas : Sequence[float]
+        Search space for ridge regularization (alpha) parameter.
+    random_state : int
+        Seed for reproducible data splitting and classification.
+    cache_baselines_once_per_dataset_group : bool
+        If True, baseline features are only computed once per dataset group.
+    evaluate_baselines : bool
+        Whether to run baseline feature extractors (PCA, BandPower, etc.).
+    model_specs : Sequence[ExtractorSpec]
+        List of trained-model extractor specifications.
+    baseline_specs : Sequence[ExtractorSpec]
+        List of baseline extractor specifications.
+    create_pca_plot : bool
+        Whether to generate PCA visualization plots.
+    pca_plot_prefix : str
+        Filename prefix for PCA plots.
+    pca_plot_show_arrows : bool
+        Whether to show principal component loadings as arrows on PCA plots.
+    """
 
     dataset_group: str
     save_path: str
@@ -58,7 +89,7 @@ class BenchmarkConfig:
     random_state: int
     cache_baselines_once_per_dataset_group: bool
     evaluate_baselines: bool
-    model_spec: ExtractorSpec
+    model_specs: Sequence[ExtractorSpec]
     baseline_specs: Sequence[ExtractorSpec]
     create_pca_plot: bool
     pca_plot_prefix: str
@@ -77,7 +108,8 @@ def benchmark_config_from_files(
     shared_config_path : str
         Path to shared benchmark YAML containing dataset and baseline settings.
     model_config_path : str
-        Path to per-model YAML containing only model extractor details.
+        Path to model YAML containing either one ``model`` entry or a ``models`` list,
+        with optional ``model_defaults`` used as shared extractor/params defaults.
     save_path_override : str | None, optional
         Optional output directory override from CLI.
 
@@ -94,8 +126,7 @@ def benchmark_config_from_files(
     model_overrides = model_yaml.get("benchmark_overrides", {})
     model_overrides = _require_mapping(model_overrides, "benchmark_overrides")
 
-    model_mapping = _require_mapping(model_yaml.get("model"), "model")
-    model_spec = _parse_extractor_spec(model_mapping, "model")
+    model_specs = _parse_model_specs(model_yaml)
 
     dataset_group = _read_with_override(shared_benchmark, model_overrides, "dataset_group")
     save_path = save_path_override if save_path_override is not None else _read_with_override(
@@ -141,7 +172,7 @@ def benchmark_config_from_files(
         random_state=random_state,
         cache_baselines_once_per_dataset_group=cache_baselines,
         evaluate_baselines=evaluate_baselines,
-        model_spec=model_spec,
+        model_specs=model_specs,
         baseline_specs=baseline_specs,
         create_pca_plot=create_pca_plot,
         pca_plot_prefix=pca_plot_prefix,
@@ -191,28 +222,29 @@ def run_latent_benchmark(config: BenchmarkConfig) -> pd.DataFrame:
         models_root.mkdir(parents=True, exist_ok=True)
         baselines_root.mkdir(parents=True, exist_ok=True)
 
-        model_output_dir = models_root / _safe_token(config.model_spec.name)
-        model_output_dir.mkdir(parents=True, exist_ok=True)
-        print(
-            f"Running model benchmark '{config.model_spec.name}' for dataset '{dataset_spec.name}'.",
-            flush=True,
-        )
+        for model_spec in config.model_specs:
+            model_output_dir = models_root / _safe_token(model_spec.name)
+            model_output_dir.mkdir(parents=True, exist_ok=True)
+            print(
+                f"Running model benchmark '{model_spec.name}' for dataset '{dataset_spec.name}'.",
+                flush=True,
+            )
 
-        model_metrics = _run_single_extractor(
-            spec=config.model_spec,
-            dataset_name=dataset_spec.name,
-            signals=selected_signals,
-            labels=selected_labels,
-            nested_cv_folds=config.nested_cv_folds,
-            ridge_alphas=config.ridge_alphas,
-            random_state=config.random_state,
-            output_dir=model_output_dir,
-            create_pca_plot=config.create_pca_plot,
-            pca_plot_prefix=config.pca_plot_prefix,
-            pca_plot_show_arrows=config.pca_plot_show_arrows,
-        )
-        model_metrics["extractor_group"] = "model"
-        summary_rows.append(model_metrics)
+            model_metrics = _run_single_extractor(
+                spec=model_spec,
+                dataset_name=dataset_spec.name,
+                signals=selected_signals,
+                labels=selected_labels,
+                nested_cv_folds=config.nested_cv_folds,
+                ridge_alphas=config.ridge_alphas,
+                random_state=config.random_state,
+                output_dir=model_output_dir,
+                create_pca_plot=config.create_pca_plot,
+                pca_plot_prefix=config.pca_plot_prefix,
+                pca_plot_show_arrows=config.pca_plot_show_arrows,
+            )
+            model_metrics["extractor_group"] = "model"
+            summary_rows.append(model_metrics)
 
         if config.evaluate_baselines:
             for spec in config.baseline_specs:
@@ -918,7 +950,7 @@ def select_balanced_binary_indices(labels: np.ndarray, total_samples: int) -> np
         )
 
     per_class = total_samples // 2
-    ordered_labels = unique_labels.tolist()
+    ordered_labels = [str(label) for label in unique_labels.tolist()]
     if set(ordered_labels) == {"0", "1"}:
         ordered_labels = ["1", "0"]
 
@@ -1130,7 +1162,7 @@ def _load_single_row_metrics(path: Path) -> dict[str, float | str]:
     dataframe = pd.read_csv(path)
     if dataframe.shape[0] != 1:
         raise ValueError(f"Expected one-row metrics CSV at '{path}', but got {dataframe.shape[0]} rows.")
-    return dict(dataframe.iloc[0].to_dict())
+    return cast(dict[str, float | str], dict(dataframe.iloc[0].to_dict()))
 
 
 def _resolve_dataset_root(group_root: Path, dataset_name: str, dataset_count: int) -> Path:
@@ -1253,7 +1285,68 @@ def _parse_evaluation_dataset_specs(
     return parsed
 
 
-def _parse_extractor_spec(spec_mapping: Mapping[str, Any], config_path: str) -> ExtractorSpec:
+def _parse_model_specs(model_yaml: Mapping[str, Any]) -> list[ExtractorSpec]:
+    """Parse one or many model extractor specs from model YAML.
+
+    Parameters
+    ----------
+    model_yaml : Mapping[str, Any]
+        Parsed model YAML mapping.
+
+    Returns
+    -------
+    list[ExtractorSpec]
+        Parsed model extractor specifications.
+    """
+    defaults_raw = model_yaml.get("model_defaults", {})
+    defaults_mapping = _require_mapping(defaults_raw, "model_defaults")
+
+    default_extractor_raw = defaults_mapping.get("extractor", None)
+    if default_extractor_raw is not None and not isinstance(default_extractor_raw, str):
+        raise TypeError(
+            "Expected 'model_defaults.extractor' to be string when provided, "
+            f"but got {type(default_extractor_raw).__name__}."
+        )
+    default_extractor = cast(str | None, default_extractor_raw)
+
+    default_params_raw = defaults_mapping.get("params", {})
+    default_params = _require_mapping(default_params_raw, "model_defaults.params")
+
+    has_single = "model" in model_yaml
+    has_multiple = "models" in model_yaml
+
+    if has_single and has_multiple:
+        raise ValueError("Model YAML must define either 'model' or 'models', but both were provided.")
+
+    if has_multiple:
+        return _parse_extractor_specs(
+            model_yaml.get("models"),
+            "models",
+            allow_empty=False,
+            default_extractor=default_extractor,
+            default_params=default_params,
+        )
+
+    if has_single:
+        model_mapping = _require_mapping(model_yaml.get("model"), "model")
+        return [
+            _parse_extractor_spec(
+                model_mapping,
+                "model",
+                default_extractor=default_extractor,
+                default_params=default_params,
+            )
+        ]
+
+    raise KeyError("Model YAML must define either 'model' or 'models'.")
+
+
+def _parse_extractor_spec(
+    spec_mapping: Mapping[str, Any],
+    config_path: str,
+    default_extractor: str | None = None,
+    default_params: Mapping[str, Any] | None = None,
+) -> ExtractorSpec:
     """Parse one extractor specification.
 
     Parameters
@@ -1269,16 +1362,32 @@ def _parse_extractor_spec(spec_mapping: Mapping[str, Any], config_path: str) -> 
         Parsed extractor specification.
     """
     name = _require_str(spec_mapping, "name", config_path)
-    extractor_type = _require_str(spec_mapping, "extractor", config_path)
+
+    extractor_type_raw = spec_mapping.get("extractor", default_extractor)
+    if extractor_type_raw is None:
+        raise KeyError(
+            f"Missing required key '{config_path}.extractor'. Provide it per model "
+            "or define a default in 'model_defaults.extractor'."
+        )
+    if not isinstance(extractor_type_raw, str):
+        raise TypeError(
+            f"Expected '{config_path}.extractor' to be string, but got {type(extractor_type_raw).__name__}."
+        )
+    extractor_type = extractor_type_raw
+
     params_raw = spec_mapping.get("params", {})
     params = _require_mapping(params_raw, f"{config_path}.params")
-    return ExtractorSpec(name=name, extractor_type=extractor_type, params=dict(params))
+    merged_params = dict(default_params or {})
+    merged_params.update(dict(params))
+    return ExtractorSpec(name=name, extractor_type=extractor_type, params=merged_params)
 
 
 def _parse_extractor_specs(
     specs: Any,
     config_path: str,
     allow_empty: bool = False,
+    default_extractor: str | None = None,
+    default_params: Mapping[str, Any] | None = None,
 ) -> list[ExtractorSpec]:
     """Parse extractor specs from YAML values.
 
@@ -1306,7 +1415,14 @@ def _parse_extractor_specs(
     for index, item in enumerate(specs):
         item_path = f"{config_path}[{index}]"
         item_mapping = _require_mapping(item, item_path)
-        parsed.append(_parse_extractor_spec(item_mapping, item_path))
+        parsed.append(
+            _parse_extractor_spec(
+                item_mapping,
+                item_path,
+                default_extractor=default_extractor,
+                default_params=default_params,
+            )
+        )
 
     if not parsed and not allow_empty:
         raise ValueError(f"'{config_path}' must contain at least one extractor specification.")

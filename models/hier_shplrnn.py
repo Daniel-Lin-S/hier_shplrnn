@@ -4,7 +4,9 @@ from schemes.util import get_scheme_by_name
 from visualisation.plotter import Plotter
 from eval.evaluator import Evaluator
 import numpy as np
-from saving import Saver
+import warnings
+
+from models.saving import Saver
 
 
 def nll_loss(input, target, log_cov):
@@ -36,7 +38,11 @@ class shallowPLRNN(nn.Module):
         self.num_subjects = dataset.num_subjects
         # handle teacher forcing stuff
         self.tf_alpha = args.tf_alpha_start
-        self.tf_gamma = 1 if args.tf_alpha_end == args.tf_alpha_start else np.power(args.tf_alpha_end/args.tf_alpha_start, 1/args.num_epochs)
+        if args.tf_alpha_end == 0 and args.tf_alpha_start > 0:
+            warnings.warn(
+                'Teacher forcing alpha end is set to 0, this will lead to no teacher forcing at all. ')
+
+        self.tf_gamma = 1.0 if args.tf_alpha_end == args.tf_alpha_start else np.power(args.tf_alpha_end/args.tf_alpha_start, 1/args.num_epochs)
         # save plotter evaluator and saver
         self.plotter = Plotter(self, dataset)
         self.evaluator = Evaluator(self, args, dataset)

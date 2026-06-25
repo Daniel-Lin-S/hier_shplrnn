@@ -79,10 +79,11 @@ All keys below are defined in `configs/default.yaml`.
 - `training.optimization.num_workers` (`int | null`): Number of parallel threads for data loading; `null` enables an automated performance search.
 - `training.optimization.weight_decay` (`float`): Strength of L2 regularization applied specifically to shared (non-subject-specific) parameters.
 - `training.optimization.clip_grad_norm` (`float`): Maximum allowed norm for gradients; values above 0 trigger clipping to prevent exploding gradients.
+- `training.optimization.checkpoint_interval` (`int | null`): Frequency (in epochs) to save intermediate model checkpoints; `null` disables periodic saving. The final model is always saved after training.
 - `training.optimization.learning_rate.shared` (`float`): Step size for optimizing shared model parameters.
 - `training.optimization.learning_rate.individual` (`float | null`): Step size for subject-specific parameters; `null` reuses the `shared` learning rate.
 - `training.teacher_forcing.alpha_start` (`float`): Initial strength of teacher forcing (ground-truth injection) at the start of training.
-- `training.teacher_forcing.alpha_end` (`float | null`): Final strength of teacher forcing; if not `null`, $\alpha$ is linearly decayed from `alpha_start`. If not provided, alpha is constant during training.
+- `training.teacher_forcing.alpha_end` (`float | null`): Final strength of teacher forcing; if not `null`, $\alpha$ is exponentially decayed from `alpha_start`. If not provided, alpha is constant during training.
 
 ### `evaluation`
 
@@ -93,7 +94,13 @@ All keys below are defined in `configs/default.yaml`.
   - `scyfi`: Fixed Point analysis. Extracts and analyzes the stability of dynamical fixed points (requires `dz <= 3`).
 - `evaluation.metrics.kl_bins` (`int`): Number of bins per dimension for the `kl` metric; `0` switches to the GMM-based divergence.
 - `evaluation.metrics.pse_smooth` (`int`): Standard deviation for Gaussian smoothing of the power spectrum before computing `pse`.
-- `evaluation.plots.enabled` (`list[str]`): List of visualizations to generate:
+
+### `evaluation.intervals`
+
+- `evaluation.intervals.cheap` (`int`): Frequency (in epochs) for fast evaluations like MSE.
+- `evaluation.intervals.expensive` (`int`): Frequency (in epochs) for more computationally intensive metrics and plots.
+
+### `evaluation.plots.enabled` (`list[str]`): List of visualizations to generate:
   - `pow`: Comparison of power spectra between simulated and real data.
   - `hier`: Visualization of hierarchisation parameters (e.g., the individual vectors $p_i$).
   - `3D`: 3D rendering of generated trajectories (requires `dx <= 3`).
@@ -110,13 +117,13 @@ Training progress and model diagnostics are logged to TensorBoard. Panels are or
 ### Scalar Panels
 - **`loss/`**:
   - `rnn`: Negative log-likelihood of the observations given the latent states and noise covariance.
-  - `hier`: Regularization loss from the hierarchisation scheme (e.g., penalties on subject-specific parameters).
+  - `hier`: Regularisation loss from the hierarchisation scheme (e.g., penalties on subject-specific parameters).
+- **`mse/`**: Mean Squared Error for short-term prediction (5, 10, and 15 steps ahead).
 - **`mean_metrics/` & `median_metrics/`**: Aggregate dynamical performance across all subjects.
   - `PSE`: Average/Median Power Spectrum Error. 0 is perfect reconstruction.
   - `D_stsp`: Average/Median State-Space Divergence (KL). Lower is better.
 - **`PSE/` & `D_stsp/`**: Subject-specific metric values (indexed 0 to S-1). Useful for identifying outliers.
 - **`tf_alpha`**: Current value of the teacher-forcing interpolation coefficient.
-- **`lr/`**: Learning rate values for shared and individual parameter groups.
 
 ### Image & Figure Panels
 - **`trajectory`**: Overlay of generated vs. ground-truth observation trajectories for each subject.
