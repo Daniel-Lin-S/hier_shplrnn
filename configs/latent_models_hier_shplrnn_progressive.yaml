@@ -1,0 +1,53 @@
+model_defaults:
+  extractor: hier_shplrnn_finetuned
+  params:
+    expected_dim: 6
+    finetune_epochs: 50
+    finetune_num_workers: 0
+    use_gpu: true
+    device_id: 0
+    cohort_subject_threshold: 80
+    batch_size_multiplier: 4
+
+models:
+  - name: hier_shplrnn_finetuned_large_80
+    params:
+      model_path: ./trained_models/epileptic_progressive/hier-shPLRNN_80/001
+
+  - name: hier_shplrnn_finetuned_large_160
+    params:
+      model_path: ./trained_models/epileptic_progressive/hier-shPLRNN_160/001
+
+  - name: hier_shplrnn_finetuned_large_320
+    params:
+      model_path: ./trained_models/epileptic_progressive/hier-shPLRNN_320/001
+
+  - name: hier_shplrnn_finetuned_large_640
+    params:
+      model_path: ./trained_models/epileptic_progressive/hier-shPLRNN_640/001
+
+  - name: hier_shplrnn_finetuned_large_1280
+    params:
+      model_path: ./trained_models/epileptic_progressive/hier-shPLRNN_1280/001
+
+  - name: hier_shplrnn_finetuned_large_2560
+    params:
+      model_path: ./trained_models/epileptic_progressive/hier-shPLRNN_2560/001
+
+  - name: hier_shplrnn_finetuned_large_5120
+    params:
+      model_path: ./trained_models/epileptic_progressive/hier-shPLRNN_5120/001
+
+  - name: hier_shplrnn_finetuned_large_10240
+    params:
+      model_path: ./trained_models/epileptic_progressive/hier-shPLRNN_10240/001
+
+  - name: hier_shplrnn_scratch
+    extractor: hier_shplrnn_scratch
+    params:
+      config_path: ./configs/hier_shPLRNN_seizures.yaml
+      expected_dim: 6
+      use_gpu: true
+      device_id: 0
+      cohort_subject_threshold: 80
+      batch_size_multiplier: 4
