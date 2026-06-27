@@ -208,7 +208,7 @@ def run_latent_benchmark(config: BenchmarkConfig) -> pd.DataFrame:
         signals = load_signal_tensor(dataset_spec.data_path)
         labels = load_labels(dataset_spec.labels_path, expected_length=signals.shape[0])
 
-        selected_signals, selected_labels, _ = select_evaluation_subset(
+        selected_signals, selected_labels, selected_indices = select_evaluation_subset(
             signals,
             labels,
             total_samples=dataset_spec.total_samples,
@@ -235,6 +235,7 @@ def run_latent_benchmark(config: BenchmarkConfig) -> pd.DataFrame:
                 dataset_name=dataset_spec.name,
                 signals=selected_signals,
                 labels=selected_labels,
+                source_indices=selected_indices,
                 nested_cv_folds=config.nested_cv_folds,
                 ridge_alphas=config.ridge_alphas,
                 random_state=config.random_state,
@@ -267,6 +268,7 @@ def run_latent_benchmark(config: BenchmarkConfig) -> pd.DataFrame:
                     dataset_name=dataset_spec.name,
                     signals=selected_signals,
                     labels=selected_labels,
+                    source_indices=selected_indices,
                     nested_cv_folds=config.nested_cv_folds,
                     ridge_alphas=config.ridge_alphas,
                     random_state=config.random_state,
@@ -290,6 +292,7 @@ def _run_single_extractor(
     dataset_name: str,
     signals: np.ndarray,
     labels: np.ndarray,
+    source_indices: np.ndarray,
     nested_cv_folds: int,
     ridge_alphas: Sequence[float],
     random_state: int,
@@ -310,6 +313,8 @@ def _run_single_extractor(
         Evaluation EEG tensor.
     labels : np.ndarray
         Evaluation labels.
+    source_indices : np.ndarray
+        Source row indices for each selected evaluation sample.
     nested_cv_folds : int
         Number of folds for nested cross-validation.
     ridge_alphas : Sequence[float]
@@ -330,8 +335,21 @@ def _run_single_extractor(
     dict[str, float | str]
         Metrics dictionary.
     """
+    if source_indices.ndim != 1:
+        raise ValueError(
+            "Expected source_indices to be one-dimensional for deterministic alignment, "
+            f"but got shape {source_indices.shape}."
+        )
+    if source_indices.shape[0] != labels.shape[0]:
+        raise ValueError(
+            "Source index count does not match labels for extractor evaluation: "
+            f"indices={source_indices.shape[0]}, labels={labels.shape[0]}, "
+            f"model='{spec.name}', dataset='{dataset_name}'."
+        )
+
     extractor = create_feature_extractor(spec.extractor_type, spec.params)
     extractor.set_runtime_output_dir(str(output_dir))
+    extractor.set_evaluation_indices(source_indices)
     features = extractor.extract(signals, dataset_name=dataset_name)
 
     return evaluate_feature_set(

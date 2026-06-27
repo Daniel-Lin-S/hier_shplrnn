@@ -634,6 +634,38 @@ class HierShPLRNNCheckpointPVectorExtractor(_HierShPLRNNBPTTBaseExtractor):
         self.model_path = model_path
         self.checkpoint = checkpoint
         self._feature_cache: dict[str, np.ndarray] = {}
+        self._evaluation_indices: np.ndarray | None = None
+
+    def set_evaluation_indices(self, source_indices: np.ndarray) -> None:
+        """Set deterministic source indices for checkpoint feature alignment.
+
+        Parameters
+        ----------
+        source_indices : np.ndarray
+            One-dimensional non-negative integer indices selecting the rows to
+            keep from the checkpoint's full ``p_vector`` table.
+        """
+        indices = np.asarray(source_indices, dtype=np.int64)
+        if indices.ndim != 1:
+            raise ValueError(
+                "Expected source_indices to be one-dimensional, "
+                f"but got shape {indices.shape}."
+            )
+        if indices.size == 0:
+            raise ValueError("Expected source_indices to be non-empty for checkpoint extraction.")
+        if np.any(indices < 0):
+            raise ValueError(
+                "Expected source_indices to contain non-negative values, "
+                f"but got values={indices.tolist()}."
+            )
+        unique_count = np.unique(indices).size
+        if unique_count != indices.size:
+            raise ValueError(
+                "Expected source_indices to contain unique subject rows, "
+                f"but got {indices.size - unique_count} duplicate entries."
+            )
+
+        self._evaluation_indices = indices.copy()
 
     def extract(self, signals: np.ndarray, dataset_name: str | None = None) -> np.ndarray:
         """Load p-vectors from checkpoint and validate against evaluation batch.
@@ -650,13 +682,21 @@ class HierShPLRNNCheckpointPVectorExtractor(_HierShPLRNNBPTTBaseExtractor):
         np.ndarray
             Subject feature matrix loaded from checkpoint.
         """
-        cache_key = _dataset_token(dataset_name)
+        cache_key = self._cache_key(dataset_name)
         if cache_key not in self._feature_cache:
             self._feature_cache[cache_key] = self._load_checkpoint_vectors()
 
         features = self._feature_cache[cache_key]
         self._validate_p_vectors(features, signals, dataset_name)
         return np.copy(features)
+
+    def _cache_key(self, dataset_name: str | None) -> str:
+        """Build cache key including deterministic index selection."""
+        token = _dataset_token(dataset_name)
+        if self._evaluation_indices is None:
+            return f"{token}::all"
+        index_token = ",".join(str(int(index)) for index in self._evaluation_indices.tolist())
+        return f"{token}::{index_token}"
 
     def _resolve_checkpoint_file(self) -> str:
         """Resolve checkpoint file path from extractor settings.
@@ -726,4 +766,16 @@ class HierShPLRNNCheckpointPVectorExtractor(_HierShPLRNNBPTTBaseExtractor):
                 f"expected_dim={self.expected_dim}, actual_dim={feature_vectors.shape[1]}, "
                 f"checkpoint='{checkpoint_file}'."
             )
-        return feature_vectors
+
+        if self._evaluation_indices is None:
+            return feature_vectors
+
+        max_index = int(self._evaluation_indices.max())
+        if max_index >= feature_vectors.shape[0]:
+            raise ValueError(
+                "Evaluation subset references subject rows that are outside the checkpoint range. "
+                f"max_index={max_index}, checkpoint_rows={feature_vectors.shape[0]}, "
+                f"checkpoint='{checkpoint_file}'."
+            )
+
+        return feature_vectors[self._evaluation_indices]

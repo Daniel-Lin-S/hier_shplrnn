@@ -5,6 +5,10 @@ from schemes.base import base_hierarchisation
 
 
 class projection_hierarchisation(base_hierarchisation):
+    """
+    Defines how group-level parameters are projected to
+    individual-level parameters.
+    """
     def __init__(self, model, args):
         super().__init__(model, args)
         self.dp = args.num_individual_params
@@ -19,7 +23,8 @@ class projection_hierarchisation(base_hierarchisation):
         model parameters by a shared projection matrix."""
         super().init_parameters() # init noise cov
         # init scheme specific params
-        self.model.p_vector = nn.Parameter(torch.repeat_interleave(torch.empty(1, self.dp).uniform_(-1, 1), self.num_subjects, dim=0))
+        self.model.p_vector = nn.Parameter(
+            torch.repeat_interleave(torch.empty(1, self.dp).uniform_(-1, 1), self.num_subjects, dim=0))
         self.model.p2A = nn.Parameter(nn.init.xavier_uniform_(torch.empty(self.dp, self.dz), gain=.1))
         self.model.p2W1 = nn.Parameter(nn.init.xavier_uniform_(torch.empty(self.dp, self.dz, self.dh), gain=.1))
         self.model.p2W2 = nn.Parameter(nn.init.xavier_uniform_(torch.empty(self.dp, self.dh, self.dz), gain=.1))
@@ -39,6 +44,7 @@ class projection_hierarchisation(base_hierarchisation):
         W2 = torch.einsum('sp,phz->shz', p, self.model.p2W2)
         h1 = torch.einsum('sp,pz->sz', p, self.model.p2h1)
         h2 = torch.einsum('sp,ph->sh', p, self.model.p2h2)
+
         return A, W1, W2, h1, h2
     
     def grouped_parameters(self):
@@ -47,6 +53,7 @@ class projection_hierarchisation(base_hierarchisation):
         shared, individual = super().grouped_parameters()
         shared += [self.model.p2A, self.model.p2W1, self.model.p2W2, self.model.p2h1, self.model.p2h2]
         individual += [self.model.p_vector]
+
         return shared, individual
     
     @torch.no_grad()
@@ -63,8 +70,13 @@ class projection_hierarchisation(base_hierarchisation):
         for s in range(self.num_subjects):
             for p in range(self.dp):
                 ax.text(p, s, f"{self.model.p_vector[s, p].item():.1f}", ha="center", va="center")
+
         return [(fig, "param_vector")] + super().plot_stuff()
     
     def loss(self):
-        """Defines any regularization losses on the parameters."""
+        """
+        Defines any regularisation losses on the parameters.
+
+        Currently not implemented.
+        """
         return torch.tensor(.0)

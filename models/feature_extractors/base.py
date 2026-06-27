@@ -22,6 +22,24 @@ class LatentFeatureExtractor(abc.ABC):
         """
         del output_dir
 
+    def set_evaluation_indices(self, source_indices: np.ndarray) -> None:
+        """Set source-row indices used to build the evaluation subset.
+
+        Parameters
+        ----------
+        source_indices : np.ndarray
+            Integer indices that map each evaluation sample back to its row in
+            the full dataset before subset selection.
+
+        Notes
+        -----
+        Most extractors derive features directly from the provided ``signals``
+        array and can safely ignore this metadata. Extractors that load
+        checkpoint-resident features can override this method to preserve
+        deterministic row-to-subject alignment.
+        """
+        del source_indices
+
     @abc.abstractmethod
     def extract(self, signals: np.ndarray, dataset_name: str | None = None) -> np.ndarray:
         """Convert one evaluation dataset into latent feature vectors.

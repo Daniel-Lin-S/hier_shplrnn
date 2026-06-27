@@ -10,7 +10,6 @@ from models.feature_extractors.cbramod import CBraModFeatureExtractor
 from models.feature_extractors.hier_shplrnn import (
     HierShPLRNNCheckpointPVectorExtractor,
     HierShPLRNNFinetunedPVectorExtractor,
-    HierShPLRNNFromScratchPVectorExtractor,
 )
 from models.feature_extractors.registry import (
     create_feature_extractor,
@@ -24,7 +23,6 @@ __all__ = [
     "Catch22FeatureExtractor",
     "HierShPLRNNCheckpointPVectorExtractor",
     "HierShPLRNNFinetunedPVectorExtractor",
-    "HierShPLRNNFromScratchPVectorExtractor",
     "LatentFeatureExtractor",
     "RawPCAFeatureExtractor",
     "create_feature_extractor",

@@ -21,7 +21,7 @@ import multiprocessing
 import os
 import re
 from pathlib import Path
-from typing import Any, Mapping, cast
+from typing import Any, Mapping, Sequence, cast
 
 import numpy as np
 import pandas as pd
@@ -526,93 +526,248 @@ def evaluate_model(
     return model_path, dstsp, pse, feature_vectors
 
 
-def main() -> None:
-    """Run multi-process evaluation over discovered model runs."""
-    args = parse_args()
+EvaluationResult = tuple[str, np.ndarray, np.ndarray, np.ndarray]
 
-    if args.run_latent_benchmark:
-        shared_config_path, model_config_path = resolve_benchmark_config_paths(args)
-        benchmark_config = benchmark_config_from_files(
-            shared_config_path,
-            model_config_path,
-            save_path_override=args.save_path,
-        )
-        run_latent_benchmark(benchmark_config)
-        return
 
+def _run_benchmark_mode(args: argparse.Namespace) -> bool:
+    """Run latent benchmark mode when requested.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Parsed command-line arguments.
+
+    Returns
+    -------
+    bool
+        True when benchmark mode was executed and legacy mode should stop.
+    """
+    if not args.run_latent_benchmark:
+        return False
+
+    shared_config_path, model_config_path = resolve_benchmark_config_paths(args)
+    benchmark_config = benchmark_config_from_files(
+        shared_config_path,
+        model_config_path,
+        save_path_override=args.save_path,
+    )
+    run_latent_benchmark(benchmark_config)
+    return True
+
+
+def _prepare_legacy_args(args: argparse.Namespace) -> argparse.Namespace:
+    """Apply legacy evaluation config and defaults.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Parsed command-line arguments.
+
+    Returns
+    -------
+    argparse.Namespace
+        Legacy-mode argument namespace.
+    """
     args = apply_main_eval_config(args)
-
     if args.save_path is None:
         args.save_path = "./results/experiment"
+    return args
 
-    # get all free GPUs
-    if args.use_gpu:
-        util_dict, mem_dict = get_current_gpu_utilization()
-        args.free_gpus = [int(g) for g in util_dict.keys() if util_dict[g] < 0.05 and mem_dict[g] < 0.1]
-        if len(args.free_gpus) == 0:
-            raise RuntimeError(
-                "No free GPUs found (criteria: utilization < 5% and memory < 10%). "
-                "Use CPU mode or free up a GPU."
-            )
-        print(
-            "Can use GPUs:",
-            args.free_gpus,
-            ". Keep num_workers in a safe range for available memory.",
-            flush=True
+
+def _resolve_available_gpus(args: argparse.Namespace) -> argparse.Namespace:
+    """Resolve available GPUs for worker processes.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Legacy-mode argument namespace.
+
+    Returns
+    -------
+    argparse.Namespace
+        Updated namespace with ``free_gpus`` when GPU mode is enabled.
+    """
+    if not args.use_gpu:
+        return args
+
+    util_dict, mem_dict = get_current_gpu_utilization()
+    args.free_gpus = [
+        int(gpu_id)
+        for gpu_id in util_dict.keys()
+        if util_dict[gpu_id] < 0.05 and mem_dict[gpu_id] < 0.1
+    ]
+    if len(args.free_gpus) == 0:
+        raise RuntimeError(
+            "No free GPUs found (criteria: utilization < 5% and memory < 10%). "
+            "Use CPU mode or free up a GPU."
         )
 
-    paths = handle_path(args)
+    print(
+        "Can use GPUs:",
+        args.free_gpus,
+        ". Keep num_workers in a safe range for available memory.",
+        flush=True,
+    )
+    return args
 
-    # split up the evaluation into multiple processes
+
+def _run_parallel_evaluation(args: argparse.Namespace, paths: Sequence[str]) -> list[EvaluationResult]:
+    """Run model evaluation across all discovered paths.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Legacy-mode argument namespace.
+    paths : Sequence[str]
+        Run paths to evaluate.
+
+    Returns
+    -------
+    list[EvaluationResult]
+        Per-run evaluation outputs.
+    """
     worker_count = min(args.num_workers, len(paths))
+    if worker_count <= 0:
+        raise ValueError(
+            "Cannot start evaluation workers because worker_count <= 0. "
+            f"num_workers={args.num_workers}, paths={len(paths)}."
+        )
+
+    jobs = [(args, path) for path in paths]
     with multiprocessing.Pool(worker_count) as pool:
-        results_list = pool.map(evaluate_model, [(args, p) for p in paths], chunksize=1)
+        results = pool.map(evaluate_model, jobs, chunksize=1)
+    return list(results)
 
-    # store the results in a dictionary
-    results = {}
-    for (p, dstsp, pse, _) in results_list:
-        for s, (kl, hel) in enumerate(zip(dstsp, pse)):
-            results[(p, s)] = {'dstsp': kl, 'pse': hel}
 
-    # generate folders if necessary
-    if not os.path.exists(args.save_path):
-        os.makedirs(args.save_path)
+def _ensure_save_directory(save_path: str) -> None:
+    """Create output directory if it does not exist.
 
-    # save metric results
-    df = pd.DataFrame(results)
-    df.to_csv(os.path.join(args.save_path, 'results.csv'))
-    print("Results saved to ", os.path.join(args.save_path, 'results.csv'), flush=True)
+    Parameters
+    ----------
+    save_path : str
+        Output directory path.
+    """
+    os.makedirs(save_path, exist_ok=True)
 
-    # export subject feature vectors
+
+def _build_metric_results_dataframe(results_list: Sequence[EvaluationResult]) -> pd.DataFrame:
+    """Build deterministic metric dataframe from per-run results.
+
+    Parameters
+    ----------
+    results_list : Sequence[EvaluationResult]
+        Per-run evaluation outputs.
+
+    Returns
+    -------
+    pd.DataFrame
+        Metric dataframe in legacy multi-column format.
+    """
+    results: dict[tuple[str, int], dict[str, float]] = {}
+    sorted_results = sorted(results_list, key=lambda item: item[0])
+    for run_path, dstsp, pse, _ in sorted_results:
+        if dstsp.shape[0] != pse.shape[0]:
+            raise ValueError(
+                "Metric arrays must have matching lengths for each run. "
+                f"run_path='{run_path}', dstsp={dstsp.shape[0]}, pse={pse.shape[0]}."
+            )
+
+        for subject_index, (dstsp_value, pse_value) in enumerate(zip(dstsp, pse)):
+            results[(run_path, subject_index)] = {
+                "dstsp": float(dstsp_value),
+                "pse": float(pse_value),
+            }
+
+    if not results:
+        raise ValueError("No metric results were produced by evaluation workers.")
+    return pd.DataFrame(results)
+
+
+def _save_metric_results(df: pd.DataFrame, save_path: str) -> None:
+    """Save metric results CSV.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Metric dataframe.
+    save_path : str
+        Output directory path.
+    """
+    result_path = os.path.join(save_path, "results.csv")
+    df.to_csv(result_path)
+    print(f"Results saved to {result_path}", flush=True)
+
+
+def _resolve_labels_for_features(
+    args: argparse.Namespace,
+    results_list: Sequence[EvaluationResult],
+) -> np.ndarray | None:
+    """Resolve optional subject labels for feature export and plotting.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Legacy-mode argument namespace.
+    results_list : Sequence[EvaluationResult]
+        Per-run evaluation outputs.
+
+    Returns
+    -------
+    np.ndarray | None
+        Loaded label array when available, otherwise None.
+    """
     labels_path = resolve_subject_labels_path(args)
-    labels: np.ndarray | None = None
     if labels_path is None:
         print(
             "No subject label path provided or inferred. "
             "Subject features will be exported but label-aware PCA plots are skipped.",
             flush=True,
         )
+        return None
 
+    if len(results_list) == 0:
+        raise ValueError("Cannot resolve labels because no evaluation results were returned.")
+
+    expected_num_subjects = int(results_list[0][3].shape[0])
+    labels = load_subject_labels(labels_path, expected_num_subjects)
+    print(f"Loaded subject labels from {labels_path}", flush=True)
+    return labels
+
+
+def _build_feature_rows(
+    results_list: Sequence[EvaluationResult],
+    labels: np.ndarray | None,
+) -> list[dict[str, Any]]:
+    """Build deterministic rows for subject feature export.
+
+    Parameters
+    ----------
+    results_list : Sequence[EvaluationResult]
+        Per-run evaluation outputs.
+    labels : np.ndarray | None
+        Optional subject labels.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        Feature export rows.
+    """
     feature_rows: list[dict[str, Any]] = []
-    for p, _, _, feature_vectors in results_list:
-        if labels_path is not None and labels is None:
-            labels = load_subject_labels(labels_path, feature_vectors.shape[0])
-            print(f"Loaded subject labels from {labels_path}", flush=True)
-
+    sorted_results = sorted(results_list, key=lambda item: item[0])
+    for run_path, _, _, feature_vectors in sorted_results:
         if labels is not None and labels.shape[0] != feature_vectors.shape[0]:
             raise ValueError(
                 "Label count does not match feature vectors for run "
-                f"'{p}': got {labels.shape[0]} labels and "
-                f"{feature_vectors.shape[0]} feature vectors."
+                f"'{run_path}': labels={labels.shape[0]}, features={feature_vectors.shape[0]}."
             )
 
         for subject_index, subject_features in enumerate(feature_vectors):
             row: dict[str, Any] = {
-                "run_path": p,
-                "subject_index": subject_index,
+                "run_path": run_path,
+                "subject_index": int(subject_index),
             }
-            for dim_index, dim_value in enumerate(subject_features):
-                row[f"feature_{dim_index + 1}"] = float(dim_value)
+            for dim_index, dim_value in enumerate(subject_features, start=1):
+                row[f"feature_{dim_index}"] = float(dim_value)
             if labels is not None:
                 row["label"] = str(labels[subject_index])
             feature_rows.append(row)
@@ -622,19 +777,43 @@ def main() -> None:
             "No subject feature vectors were collected from evaluated runs. "
             "Cannot write feature export CSV."
         )
-    feature_df = pd.DataFrame(feature_rows)
+    return feature_rows
+
+
+def _save_feature_rows(args: argparse.Namespace, feature_rows: Sequence[dict[str, Any]]) -> None:
+    """Save subject feature vectors to CSV.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Legacy-mode argument namespace.
+    feature_rows : Sequence[dict[str, Any]]
+        Feature export rows.
+    """
+    feature_df = pd.DataFrame(list(feature_rows))
     feature_csv_path = os.path.join(args.save_path, args.subject_feature_csv)
     feature_df.to_csv(feature_csv_path, index=False)
     print(f"Saved subject feature vectors to {feature_csv_path}", flush=True)
 
-    if labels is None:
-        print(
-            "Skipping subject feature PCA plots because labels are unavailable.",
-            flush=True,
-        )
-        return
 
-    for run_path, _, _, feature_vectors in results_list:
+def _save_feature_pca_plots(
+    save_path: str,
+    results_list: Sequence[EvaluationResult],
+    labels: np.ndarray,
+) -> None:
+    """Save per-run PCA plots for extracted subject features.
+
+    Parameters
+    ----------
+    save_path : str
+        Output directory path.
+    results_list : Sequence[EvaluationResult]
+        Per-run evaluation outputs.
+    labels : np.ndarray
+        Subject labels.
+    """
+    sorted_results = sorted(results_list, key=lambda item: item[0])
+    for run_path, _, _, feature_vectors in sorted_results:
         if feature_vectors.shape[1] < 2:
             print(
                 f"Skipping PCA plot for run '{run_path}' because feature_dim={feature_vectors.shape[1]} < 2.",
@@ -643,7 +822,7 @@ def main() -> None:
             continue
 
         plot_filename = f"subject_feature_pca_{_safe_run_name(run_path)}.png"
-        plot_path = os.path.join(args.save_path, plot_filename)
+        plot_path = os.path.join(save_path, plot_filename)
         plot_subject_feature_pca(
             feature_vectors=feature_vectors,
             labels=labels,
@@ -651,6 +830,48 @@ def main() -> None:
             output_path=plot_path,
             show_arrows=False,
         )
+
+
+def run_legacy_evaluation(args: argparse.Namespace) -> None:
+    """Run legacy checkpoint evaluation workflow.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Parsed command-line arguments.
+    """
+    args = _prepare_legacy_args(args)
+    args = _resolve_available_gpus(args)
+
+    paths = handle_path(args)
+    results_list = _run_parallel_evaluation(args, paths)
+
+    _ensure_save_directory(args.save_path)
+    results_df = _build_metric_results_dataframe(results_list)
+    _save_metric_results(results_df, args.save_path)
+
+    labels = _resolve_labels_for_features(args, results_list)
+    feature_rows = _build_feature_rows(results_list, labels)
+    _save_feature_rows(args, feature_rows)
+
+    if labels is None:
+        print(
+            "Skipping subject feature PCA plots because labels are unavailable.",
+            flush=True,
+        )
+        return
+
+    _save_feature_pca_plots(args.save_path, results_list, labels)
+
+
+def main() -> None:
+    """Entry point for benchmark and legacy evaluation modes."""
+    args = parse_args()
+
+    if _run_benchmark_mode(args):
+        return
+
+    run_legacy_evaluation(args)
 
 if __name__ == "__main__":
     main()

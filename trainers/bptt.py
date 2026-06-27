@@ -82,7 +82,12 @@ def edit_args(args, new_args):
     return new_args
 
 class BPTT:
-    """Training class for backpropagation through time."""
+    """
+    Main training class for backpropagation through time.
+
+    Supported models:
+    - shallowPLRNN
+    """
     def __init__(self, args, dataset):
         """Args:
             model: model to train
@@ -168,7 +173,7 @@ class BPTT:
                 rnn_loss = self.criterion(prediction, target, self.model.noise_cov[subject])
                 hier_loss = torch.tensor(0, device=self.args.device)
                 if self.args.lam > 0:
-                    hier_loss = self.args.lam*self.model.hierarchisation_scheme.loss()
+                    hier_loss = self.args.lam * self.model.hierarchisation_scheme.loss()
                 # backpropagate
                 (rnn_loss + hier_loss).backward()
                 # clip gradients
