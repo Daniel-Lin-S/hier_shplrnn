@@ -23,6 +23,7 @@ class Evaluator(object):
             # use the test data if no separate long eval trajectory is supplied
             self.eval_data = self.test_data
         self.smoothing = args.pse_smooth
+        self.D_state_space = None
         self.compute_gt_power_spectrum()
     
     def load_eval_data(self, device):
@@ -43,6 +44,8 @@ class Evaluator(object):
             self.gen = self.model.generate_free_trajectory(z0, T, torch.arange(S))
             self.test = self.test_data
             gen = self.gen
+        if 'dstsp' in which:
+            self.compute_state_space_divergence(gen[:, :T])
         if 'pse' in which:
             self.compute_power_spectrum(gen[:, :T])
             self.compute_pse()
@@ -54,7 +57,8 @@ class Evaluator(object):
     def compute_expensive(self, which):
         """Computes exepnsive and cheap stuff."""
         # generate long trajectory (saved for plotting)
-        if self.eval_data.ndim == 2: self.eval_data.unsqueeze(0)
+        if self.eval_data.ndim == 2:
+            self.eval_data = self.eval_data.unsqueeze(0)
         S, T, _ = self.eval_data.shape
         z0 = self.eval_data[:,0]
         self.gen = self.model.generate_free_trajectory(z0, T, torch.arange(S))
@@ -85,10 +89,28 @@ class Evaluator(object):
     def compute_state_space_divergence(self, gen):
         """Computes the state space divergence between the eval data (test data if former
         has not been provided) and a generated trajectory of same length."""
+        if not hasattr(self, 'test'):
+            raise RuntimeError(
+                "Cannot compute state-space divergence because no reference trajectory is set. "
+                "Call compute_cheap or compute_expensive first."
+            )
+
+        reference = self.test
+        if gen.shape[0] != reference.shape[0]:
+            raise ValueError(
+                "State-space divergence shape mismatch on subject axis: "
+                f"generated={gen.shape[0]}, reference={reference.shape[0]}."
+            )
+        if gen.shape[-1] != reference.shape[-1]:
+            raise ValueError(
+                "State-space divergence shape mismatch on feature axis: "
+                f"generated={gen.shape[-1]}, reference={reference.shape[-1]}."
+            )
+
         dstsp_fn = state_space_divergence_gmm if self.args.kl_bins == 0 else lambda x,y: state_space_divergence_binning(x, y, self.args.kl_bins)
         d = []
-        for s in range(self.test_data.shape[0]):
-            d.append(dstsp_fn(gen[s], self.eval_data[s]))
+        for s in range(gen.shape[0]):
+            d.append(dstsp_fn(gen[s], reference[s]))
         self.D_state_space = torch.tensor(d)
     
     def compute_scyfi(self):
@@ -132,6 +154,11 @@ class Evaluator(object):
     
     def get_state_space_divergence(self):
         """Returns the previously computed state space divergence."""
+        if self.D_state_space is None:
+            raise RuntimeError(
+                "State-space divergence is unavailable because it has not been computed yet. "
+                "Ensure 'dstsp' is enabled and that a periodic evaluation already ran."
+            )
         return self.D_state_space
     
     def get_gen_data(self):
