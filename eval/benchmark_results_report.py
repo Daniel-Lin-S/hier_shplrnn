@@ -1,16 +1,16 @@
-"""Collect latent benchmark results and generate visual comparisons."""
+"""Collect latent benchmark results and generate faceted uncertainty plots."""
 
 from __future__ import annotations
 
 import argparse
 import math
+import re
 from pathlib import Path
 from typing import Any
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from matplotlib.patches import Patch
 
 KEY_TEST_METRICS: tuple[str, ...] = (
     "test_accuracy",
@@ -21,12 +21,17 @@ KEY_TEST_METRICS: tuple[str, ...] = (
     "test_mutual_information_max",
 )
 
-LOWER_IS_BETTER: set[str] = {"test_aic", "test_bic"}
 COLOR_BY_GROUP: dict[str, str] = {
     "model": "#1f77b4",
     "baseline": "#ff7f0e",
     "unknown": "#7f7f7f",
 }
+
+DETERMINISTIC_EXTRACTOR_TYPES: frozenset[str] = frozenset({
+    "pca",
+    "bandpower",
+    "catch22",
+})
 
 
 def parse_args() -> argparse.Namespace:
@@ -38,15 +43,13 @@ def parse_args() -> argparse.Namespace:
         Parsed arguments.
     """
     parser = argparse.ArgumentParser(
-        description="Collect model/baseline benchmark outputs and create comparison reports.",
+        description="Collect model/baseline benchmark outputs and create faceted uncertainty reports.",
     )
     parser.add_argument(
         "--benchmark_root",
         type=str,
         required=True,
-        help=(
-            "Dataset benchmark root containing 'models' and optionally 'baselines' directories. "
-        ),
+        help="Dataset benchmark root containing models and optionally baselines directories.",
     )
     parser.add_argument(
         "--summary_filename",
@@ -92,27 +95,22 @@ def collect_benchmark_rows(benchmark_root: Path) -> pd.DataFrame:
 
     summary_df["model_name"] = summary_df["model_name"].astype(str)
     summary_df["extractor_group"] = summary_df["extractor_group"].astype(str)
-    summary_df = summary_df.sort_values(["extractor_group", "model_name"]).reset_index(drop=True)
+    if "extractor_type" in summary_df.columns:
+        summary_df["extractor_type"] = summary_df["extractor_type"].astype(str)
+        missing_mask = summary_df["extractor_type"].str.strip() == ""
+        summary_df.loc[missing_mask, "extractor_type"] = summary_df.loc[missing_mask, "model_name"].map(
+            _extractor_type_from_name
+        )
+    else:
+        summary_df["extractor_type"] = summary_df["model_name"].map(_extractor_type_from_name)
+    summary_df["base_model_name"] = summary_df["model_name"].map(_base_model_name)
+    summary_df["repetition_id"] = summary_df["model_name"].map(_repetition_id_from_name)
+    summary_df = summary_df.sort_values(["extractor_group", "base_model_name", "model_name"]).reset_index(drop=True)
     return summary_df
 
 
 def _collect_group_rows(benchmark_root: Path, group_folder: str, group_name: str) -> list[dict[str, Any]]:
-    """Collect metric rows for one extractor group.
-
-    Parameters
-    ----------
-    benchmark_root : Path
-        Root benchmark directory.
-    group_folder : str
-        Folder name under benchmark_root.
-    group_name : str
-        Group label stored in the output dataframe.
-
-    Returns
-    -------
-    list[dict[str, Any]]
-        Extracted metric rows.
-    """
+    """Collect metric rows for one extractor group."""
     group_path = benchmark_root / group_folder
     if not group_path.exists():
         return []
@@ -137,30 +135,62 @@ def _collect_group_rows(benchmark_root: Path, group_folder: str, group_name: str
     return rows
 
 
-def save_summary_csv(summary_df: pd.DataFrame, summary_path: Path) -> None:
-    """Save benchmark summary CSV.
+def _base_model_name(model_name: str) -> str:
+    """Remove repetition suffix from a model name."""
+    token = str(model_name)
+    match = re.match(r"^(?P<base>.+)__rep\d+_seed\d+$", token)
+    if match is None:
+        return token
+    return str(match.group("base"))
+
+
+def _repetition_id_from_name(model_name: str) -> int | None:
+    """Extract repetition id from a model name suffix."""
+    token = str(model_name)
+    match = re.match(r"^.+__rep(?P<rep>\d+)_seed\d+$", token)
+    if match is None:
+        return None
+    return int(match.group("rep"))
+
+
+def _extractor_type_from_name(model_name: str) -> str:
+    """Heuristically infer extractor type from model name."""
+    token = _base_model_name(str(model_name)).lower()
+    if "bandpower" in token:
+        return "bandpower"
+    if "catch22" in token:
+        return "catch22"
+    if "pca" in token:
+        return "pca"
+    if "hier_shplrnn_finetuned" in token:
+        return "hier_shplrnn_finetuned"
+    if "hier_shplrnn_checkpoint" in token or "hier_shplrnn_epoch" in token:
+        return "hier_shplrnn_checkpoint"
+    if "cbramod" in token:
+        return "cbramod_pretrained"
+    return "unknown"
+
+
+def aggregate_repetition_statistics(summary_df: pd.DataFrame) -> pd.DataFrame:
+    """Aggregate repeated benchmark rows into mean and uncertainty columns.
 
     Parameters
     ----------
     summary_df : pd.DataFrame
-        Benchmark summary dataframe.
-    summary_path : Path
-        Output CSV path.
+        Raw benchmark rows.
+
+    Returns
+    -------
+    pd.DataFrame
+        Aggregated rows with ``*_mean`` and ``*_std`` columns.
     """
-    summary_df.to_csv(summary_path, index=False)
-    print(f"Saved collected benchmark summary to '{summary_path}'.", flush=True)
+    missing_cols = {"base_model_name", "extractor_group", "extractor_type"} - set(summary_df.columns)
+    if missing_cols:
+        raise ValueError(
+            "Cannot aggregate benchmark rows because required columns are missing: "
+            f"{sorted(missing_cols)}."
+        )
 
-
-def plot_key_metric_bars(summary_df: pd.DataFrame, output_path: Path) -> None:
-    """Plot key test metrics as ranked horizontal bar charts.
-
-    Parameters
-    ----------
-    summary_df : pd.DataFrame
-        Benchmark summary dataframe.
-    output_path : Path
-        Output figure path.
-    """
     available_metrics = [metric for metric in KEY_TEST_METRICS if metric in summary_df.columns]
     if not available_metrics:
         raise ValueError(
@@ -168,177 +198,167 @@ def plot_key_metric_bars(summary_df: pd.DataFrame, output_path: Path) -> None:
             f"Expected any of {KEY_TEST_METRICS}."
         )
 
+    for metric in available_metrics:
+        summary_df[metric] = pd.to_numeric(summary_df[metric], errors="coerce")
+
+    grouped = summary_df.groupby(["base_model_name", "extractor_group", "extractor_type"], dropna=False)
+    rows: list[dict[str, Any]] = []
+    for (base_name, group, extractor_type), frame in grouped:
+        row: dict[str, Any] = {
+            "base_model_name": str(base_name),
+            "extractor_group": str(group),
+            "extractor_type": str(extractor_type),
+            "num_repetitions": int(frame.shape[0]),
+        }
+        is_deterministic = str(extractor_type) in DETERMINISTIC_EXTRACTOR_TYPES
+
+        for metric in available_metrics:
+            values = frame[metric].to_numpy(dtype=np.float64)
+            finite_values = values[np.isfinite(values)]
+            if finite_values.size == 0:
+                mean_value = float("nan")
+                std_value = float("nan")
+            else:
+                mean_value = float(np.mean(finite_values))
+                if is_deterministic:
+                    std_value = 0.0
+                elif finite_values.size == 1:
+                    std_value = 0.0
+                else:
+                    std_value = float(np.std(finite_values, ddof=1))
+
+            row[f"{metric}_mean"] = mean_value
+            row[f"{metric}_std"] = std_value
+
+        rows.append(row)
+
+    aggregated = pd.DataFrame(rows)
+    aggregated = aggregated.sort_values(["extractor_group", "base_model_name"]).reset_index(drop=True)
+    return aggregated
+
+
+def save_summary_csv(summary_df: pd.DataFrame, summary_path: Path) -> None:
+    """Save benchmark summary CSV."""
+    summary_df.to_csv(summary_path, index=False)
+    print(f"Saved collected benchmark summary to '{summary_path}'.", flush=True)
+
+
+def plot_faceted_dot_error_bars(aggregated_df: pd.DataFrame, output_path: Path) -> None:
+    """Plot faceted dot-and-error-bar panels for key metrics.
+
+    Parameters
+    ----------
+    aggregated_df : pd.DataFrame
+        Aggregated metric table.
+    output_path : Path
+        Output figure path.
+    """
+    metric_names = [metric for metric in KEY_TEST_METRICS if f"{metric}_mean" in aggregated_df.columns]
+    if not metric_names:
+        raise ValueError("No aggregated key metrics found for faceted plot generation.")
+
+    y_labels = aggregated_df["base_model_name"].astype(str).tolist()
+    y_positions = np.arange(len(y_labels), dtype=np.int64)
+
     num_cols = 2
-    num_rows = int(math.ceil(len(available_metrics) / float(num_cols)))
+    num_rows = int(math.ceil(len(metric_names) / float(num_cols)))
     fig, axes = plt.subplots(
         num_rows,
         num_cols,
-        figsize=(8.0 * num_cols, 5.0 * num_rows),
+        figsize=(8.5 * num_cols, max(4.8, 0.6 * len(y_labels)) * num_rows),
         constrained_layout=True,
     )
     axes_flat = np.atleast_1d(axes).reshape(-1)
 
-    for axis, metric in zip(axes_flat, available_metrics):
-        _plot_metric_axis(axis, summary_df, metric)
+    for axis, metric in zip(axes_flat, metric_names):
+        mean_col = f"{metric}_mean"
+        std_col = f"{metric}_std"
 
-    for axis in axes_flat[len(available_metrics):]:
+        means = aggregated_df[mean_col].to_numpy(dtype=np.float64)
+        stds = aggregated_df[std_col].to_numpy(dtype=np.float64)
+        groups = aggregated_df["extractor_group"].astype(str).tolist()
+        extractor_types = aggregated_df["extractor_type"].astype(str).tolist()
+
+        zipped_values = zip(means, stds, groups, extractor_types)
+        for index, (mean_value, std_value, group, extractor_type) in enumerate(zipped_values):
+            color = COLOR_BY_GROUP.get(group, COLOR_BY_GROUP["unknown"])
+            y_coord = y_positions[index]
+
+            if not np.isfinite(mean_value):
+                continue
+
+            deterministic = extractor_type in DETERMINISTIC_EXTRACTOR_TYPES or np.isclose(std_value, 0.0)
+            axis.scatter(mean_value, y_coord, color=color, s=28, zorder=3)
+            if not deterministic and np.isfinite(std_value) and std_value > 0:
+                axis.errorbar(
+                    x=mean_value,
+                    y=y_coord,
+                    xerr=std_value,
+                    fmt="none",
+                    ecolor=color,
+                    elinewidth=1.6,
+                    capsize=2.8,
+                    alpha=0.9,
+                    zorder=2,
+                )
+
+        axis.set_yticks(y_positions)
+        axis.set_yticklabels(y_labels)
+        axis.invert_yaxis()
+        axis.grid(axis="x", alpha=0.25, linestyle="--")
+        axis.set_xlabel(metric)
+        axis.set_title(metric)
+
+    for axis in axes_flat[len(metric_names):]:
         axis.axis("off")
 
-    legend_handles = [
-        Patch(color=COLOR_BY_GROUP["model"], label="model"),
-        Patch(color=COLOR_BY_GROUP["baseline"], label="baseline"),
-    ]
-    fig.legend(handles=legend_handles, loc="lower center", ncol=2)
-    fig.suptitle("Latent Benchmark Key Test Metrics", fontsize=16)
-
+    fig.suptitle("Latent Benchmark: Mean Score With Uncertainty", fontsize=15)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=220)
     plt.close(fig)
-    print(f"Saved key metric bar chart to '{output_path}'.", flush=True)
+    print(f"Saved faceted metric plot to '{output_path}'.", flush=True)
 
 
-def _plot_metric_axis(axis: plt.Axes, summary_df: pd.DataFrame, metric: str) -> None:
-    """Render one metric ranking panel.
-
-    Parameters
-    ----------
-    axis : plt.Axes
-        Matplotlib axis.
-    summary_df : pd.DataFrame
-        Benchmark summary dataframe.
-    metric : str
-        Metric name to plot.
-    """
-    plot_df = summary_df[["model_name", "extractor_group", metric]].copy()
-    plot_df[metric] = pd.to_numeric(plot_df[metric], errors="coerce")
-    plot_df = plot_df.dropna(subset=[metric])
-
-    if plot_df.empty:
-        axis.text(0.5, 0.5, f"No values for {metric}", ha="center", va="center")
-        axis.set_axis_off()
-        return
-
-    ascending = metric in LOWER_IS_BETTER
-    ranked = plot_df.sort_values(metric, ascending=ascending).reset_index(drop=True)
-    colors = ranked["extractor_group"].map(COLOR_BY_GROUP).fillna(COLOR_BY_GROUP["unknown"]).tolist()
-
-    axis.barh(ranked["model_name"], ranked[metric], color=colors)
-    axis.invert_yaxis()
-    axis.grid(axis="x", alpha=0.3, linestyle="--")
-    axis.set_xlabel(metric)
-
-    direction = "lower is better" if ascending else "higher is better"
-    axis.set_title(f"{metric} ({direction})")
-
-
-def plot_metric_score_heatmap(summary_df: pd.DataFrame, output_path: Path) -> None:
-    """Create a normalized score heatmap across test metrics.
+def regenerate_benchmark_report(
+    benchmark_root: Path,
+    summary_filename: str = "latent_benchmark_summary.csv",
+    plots_subdir: str = "figures",
+) -> None:
+    """Regenerate summary CSV and faceted figure for a benchmark root.
 
     Parameters
     ----------
-    summary_df : pd.DataFrame
-        Benchmark summary dataframe.
-    output_path : Path
-        Output figure path.
+    benchmark_root : Path
+        Benchmark root containing model and baseline outputs.
+    summary_filename : str, optional
+        Output summary CSV name.
+    plots_subdir : str, optional
+        Output plot subdirectory.
     """
-    available_metrics = [metric for metric in KEY_TEST_METRICS if metric in summary_df.columns]
-    if not available_metrics:
-        raise ValueError(
-            "Cannot build heatmap because none of the key metrics are available in the summary dataframe."
-        )
-
-    score_df = summary_df[["model_name"] + available_metrics].copy()
-    score_df = score_df.drop_duplicates(subset=["model_name"], keep="last").reset_index(drop=True)
-
-    normalized_columns: dict[str, np.ndarray] = {}
-    for metric in available_metrics:
-        values = pd.to_numeric(score_df[metric], errors="coerce").to_numpy(dtype=np.float64)
-        normalized_columns[metric] = _normalize_metric(values, higher_is_better=metric not in LOWER_IS_BETTER)
-
-    norm_df = pd.DataFrame(normalized_columns)
-    norm_df.insert(0, "model_name", score_df["model_name"])
-    matrix = norm_df[available_metrics].to_numpy(dtype=np.float64)
-
-    fig_width = max(8.0, 1.2 * len(available_metrics))
-    fig_height = max(4.5, 0.55 * matrix.shape[0] + 2.5)
-    fig, axis = plt.subplots(figsize=(fig_width, fig_height), constrained_layout=True)
-
-    image = axis.imshow(matrix, aspect="auto", cmap="viridis", vmin=0.0, vmax=1.0)
-    axis.set_xticks(np.arange(len(available_metrics)))
-    axis.set_xticklabels(available_metrics, rotation=35, ha="right")
-    axis.set_yticks(np.arange(matrix.shape[0]))
-    axis.set_yticklabels(norm_df["model_name"].tolist())
-    axis.set_title("Normalized Test-Metric Score Heatmap (1 = best)")
-
-    for row_index in range(matrix.shape[0]):
-        for col_index in range(matrix.shape[1]):
-            value = matrix[row_index, col_index]
-            if np.isfinite(value):
-                text_color = "white" if value < 0.55 else "black"
-                axis.text(col_index, row_index, f"{value:.2f}", ha="center", va="center", color=text_color)
-
-    colorbar = fig.colorbar(image, ax=axis)
-    colorbar.set_label("Normalized score")
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, dpi=220)
-    plt.close(fig)
-    print(f"Saved metric-score heatmap to '{output_path}'.", flush=True)
-
-
-def _normalize_metric(values: np.ndarray, higher_is_better: bool) -> np.ndarray:
-    """Normalize metric values into [0, 1], where 1 indicates best value.
-
-    Parameters
-    ----------
-    values : np.ndarray
-        Metric values.
-    higher_is_better : bool
-        Whether larger values indicate better performance.
-
-    Returns
-    -------
-    np.ndarray
-        Normalized metric values.
-    """
-    finite_mask = np.isfinite(values)
-    normalized = np.full(values.shape, np.nan, dtype=np.float64)
-
-    if not np.any(finite_mask):
-        return normalized
-
-    finite_values = values[finite_mask]
-    minimum = float(np.min(finite_values))
-    maximum = float(np.max(finite_values))
-
-    if np.isclose(maximum, minimum):
-        normalized[finite_mask] = 0.5
-        return normalized
-
-    if higher_is_better:
-        normalized[finite_mask] = (finite_values - minimum) / (maximum - minimum)
-    else:
-        normalized[finite_mask] = (maximum - finite_values) / (maximum - minimum)
-
-    return normalized
-
-
-def main() -> None:
-    """Collect benchmark results, regenerate summary CSV, and save figures."""
-    args = parse_args()
-
-    benchmark_root = Path(args.benchmark_root)
     if not benchmark_root.exists():
         raise FileNotFoundError(f"Benchmark root '{benchmark_root}' does not exist.")
 
-    summary_df = collect_benchmark_rows(benchmark_root)
+    raw_df = collect_benchmark_rows(benchmark_root)
+    summary_path = benchmark_root / summary_filename
+    save_summary_csv(raw_df, summary_path)
 
-    summary_path = benchmark_root / args.summary_filename
-    save_summary_csv(summary_df, summary_path)
+    aggregated_df = aggregate_repetition_statistics(raw_df)
+    aggregated_path = benchmark_root / "latent_benchmark_aggregated_summary.csv"
+    aggregated_df.to_csv(aggregated_path, index=False)
+    print(f"Saved aggregated benchmark summary to '{aggregated_path}'.", flush=True)
 
-    plots_root = benchmark_root / args.plots_subdir
-    plot_key_metric_bars(summary_df, plots_root / "key_test_metrics_bars.png")
-    plot_metric_score_heatmap(summary_df, plots_root / "key_test_metrics_heatmap.png")
+    plots_root = benchmark_root / plots_subdir
+    plot_faceted_dot_error_bars(aggregated_df, plots_root / "key_test_metrics_facet_dot_error.png")
+
+
+def main() -> None:
+    """Collect benchmark results, regenerate summaries, and save faceted figure."""
+    args = parse_args()
+    regenerate_benchmark_report(
+        benchmark_root=Path(args.benchmark_root),
+        summary_filename=args.summary_filename,
+        plots_subdir=args.plots_subdir,
+    )
 
 
 if __name__ == "__main__":

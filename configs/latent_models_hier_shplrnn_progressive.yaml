@@ -5,7 +5,7 @@ model_defaults:
   extractor: hier_shplrnn_finetuned
   params:
     expected_dim: 6
-    finetune_epochs: 50
+    finetune_epochs: 100
     finetune_num_workers: 0
     use_gpu: true
     device_id: 0
@@ -36,17 +36,3 @@ models:
   - name: hier_shplrnn_finetuned_large_2560
     params:
       model_path: ./trained_models/epileptic_progressive/hier-shPLRNN_2560/001
-
-  - name: hier_shplrnn_finetuned_large_5120
-    params:
-      model_path: ./trained_models/epileptic_progressive/hier-shPLRNN_5120/001
-
-  - name: hier_shplrnn_finetuned_large_10240
-    params:
-      model_path: ./trained_models/epileptic_progressive/hier-shPLRNN_10240/001
-
-  - name: hier_shplrnn_checkpoint_004
-    extractor: hier_shplrnn_checkpoint
-    params:
-      model_path: ./trained_models/epileptic/hier-shPLRNN/004
-      expected_dim: 6

@@ -1,6 +1,9 @@
+benchmark_overrides:
+  dataset_group: epileptic_small_progressive
+
 model:
-  name: hier_shplrnn_checkpoint_004
+  name: hier_shplrnn_scratch
   extractor: hier_shplrnn_checkpoint
   params:
-    model_path: ./trained_models/epileptic/hier-shPLRNN/004
+    model_path: ./trained_models/epileptic/hier-shPLRNN/005
     expected_dim: 6

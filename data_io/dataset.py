@@ -3,6 +3,8 @@ from torch.utils.data import Dataset, DataLoader, RandomSampler
 import numpy as np
 import time
 
+from data_io.pt_tensor import DEFAULT_SUBSAMPLE_SEED, load_subject_timeseries_pt
+
 
 class SingleSubjectDataset(Dataset):
     """Dataset for a single timeseries. This is not used as a standalone."""
@@ -49,7 +51,17 @@ class SingleSubjectDataset(Dataset):
 
 class MultiSubjectDataset(Dataset):
     """Main dataset class. Consists of one or multiple single subject datasets"""
-    def __init__(self, path, seq_len, size, subjects_per_batch, num_workers, device="cpu"):
+    def __init__(
+        self,
+        path,
+        seq_len,
+        size,
+        subjects_per_batch,
+        num_workers,
+        device="cpu",
+        subsample_size=None,
+        subsample_seed=DEFAULT_SUBSAMPLE_SEED,
+    ):
         """Initializes the dataset.
         Args:
             path: full path to the data. Expected to be .pt file
@@ -61,12 +73,15 @@ class MultiSubjectDataset(Dataset):
                 in the batch
             num_workers: number of workers for the dataloader
             device: device to store the data on
+            subsample_size: optional number of subjects sampled from axis 0
+            subsample_seed: random seed for deterministic subsampling
         """
         self.num_workers = num_workers
-        self.data = torch.load(path)
-        # add subject dimension for single subject datasets
-        if self.data.ndim == 2:
-            self.data = self.data.unsqueeze(0)
+        self.data = load_subject_timeseries_pt(
+            path,
+            subsample_size=subsample_size,
+            subsample_seed=subsample_seed,
+        )
         self.datasets = []
         for i in range(self.data.shape[0]):
             self.datasets.append(SingleSubjectDataset(self.data[i], seq_len, size, device=device))

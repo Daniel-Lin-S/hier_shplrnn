@@ -109,6 +109,9 @@ All keys below are defined in `configs/default.yaml`.
 ### `runtime`
 
 - `runtime.compile` (`bool`): Enable `torch.compile` for model/training callable.
+- `runtime.data_loading.subsample_size` (`int | null`): Optional axis-0 subsample size applied when reading `.pt`
+  tensors in `main.py` and `main_eval.py`. `null` keeps all rows.
+- `runtime.data_loading.subsample_seed` (`int`): Deterministic seed used when `subsample_size` is set.
 
 ## TensorBoard Visualisation
 

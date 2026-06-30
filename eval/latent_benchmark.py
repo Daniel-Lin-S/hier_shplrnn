@@ -20,6 +20,7 @@ from sklearn.model_selection import StratifiedKFold
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import LabelEncoder, StandardScaler, label_binarize
 
+from data_io.pt_tensor import DEFAULT_SUBSAMPLE_SEED, load_signal_samples_pt
 from models.feature_extractors import create_feature_extractor
 from visualisation.eval_plotter import plot_subject_feature_pca
 
@@ -79,6 +80,10 @@ class BenchmarkConfig:
         Filename prefix for PCA plots.
     pca_plot_show_arrows : bool
         Whether to show principal component loadings as arrows on PCA plots.
+    subsample_size : int | None
+        Optional axis-0 subsample size applied while loading each evaluation ``.pt`` tensor.
+    subsample_seed : int
+        Random seed used for deterministic subsampling of evaluation tensors.
     """
 
     dataset_group: str
@@ -94,12 +99,16 @@ class BenchmarkConfig:
     create_pca_plot: bool
     pca_plot_prefix: str
     pca_plot_show_arrows: bool
+    subsample_size: int | None
+    subsample_seed: int
 
 
 def benchmark_config_from_files(
     shared_config_path: str,
     model_config_path: str,
     save_path_override: str | None = None,
+    subsample_size_override: int | None = None,
+    subsample_seed_override: int | None = None,
 ) -> BenchmarkConfig:
     """Build benchmark config from shared and per-model YAML files.
 
@@ -112,6 +121,10 @@ def benchmark_config_from_files(
         with optional ``model_defaults`` used as shared extractor/params defaults.
     save_path_override : str | None, optional
         Optional output directory override from CLI.
+    subsample_size_override : int | None, optional
+        Optional subsample size override from CLI.
+    subsample_seed_override : int | None, optional
+        Optional subsample seed override from CLI.
 
     Returns
     -------
@@ -163,6 +176,36 @@ def benchmark_config_from_files(
     pca_plot_prefix = str(pca_cfg.get("prefix", "subject_feature_pca"))
     pca_plot_show_arrows = bool(pca_cfg.get("show_arrows", False))
 
+    data_loading_cfg = _read_with_default(shared_benchmark, model_overrides, "data_loading", {})
+    data_loading_cfg = _require_mapping(data_loading_cfg, "benchmark.data_loading")
+    
+    # Subsample Size
+    if subsample_size_override is not None:
+        subsample_size = int(subsample_size_override)
+    else:
+        subsample_size_raw = data_loading_cfg.get("subsample_size", None)
+        if subsample_size_raw is None:
+            subsample_size = None
+        elif isinstance(subsample_size_raw, int):
+            subsample_size = int(subsample_size_raw)
+        else:
+            raise TypeError(
+                "Expected benchmark.data_loading.subsample_size to be int or null, "
+                f"but got type '{type(subsample_size_raw).__name__}'."
+            )
+    
+    # Subsample Seed
+    if subsample_seed_override is not None:
+        subsample_seed = int(subsample_seed_override)
+    else:
+        subsample_seed_raw = data_loading_cfg.get("subsample_seed", DEFAULT_SUBSAMPLE_SEED)
+        if not isinstance(subsample_seed_raw, int):
+            raise TypeError(
+                "Expected benchmark.data_loading.subsample_seed to be int, "
+                f"but got type '{type(subsample_seed_raw).__name__}'."
+            )
+        subsample_seed = int(subsample_seed_raw)
+
     return BenchmarkConfig(
         dataset_group=str(dataset_group),
         save_path=str(save_path),
@@ -177,6 +220,8 @@ def benchmark_config_from_files(
         create_pca_plot=create_pca_plot,
         pca_plot_prefix=pca_plot_prefix,
         pca_plot_show_arrows=pca_plot_show_arrows,
+        subsample_size=subsample_size,
+        subsample_seed=subsample_seed,
     )
 
 
@@ -205,7 +250,11 @@ def run_latent_benchmark(config: BenchmarkConfig) -> pd.DataFrame:
 
     for dataset_spec in config.evaluation_datasets:
         print(f"Running evaluation dataset '{dataset_spec.name}'.", flush=True)
-        signals = load_signal_tensor(dataset_spec.data_path)
+        signals = load_signal_tensor(
+            dataset_spec.data_path,
+            subsample_size=config.subsample_size,
+            subsample_seed=config.subsample_seed,
+        )
         labels = load_labels(dataset_spec.labels_path, expected_length=signals.shape[0])
 
         selected_signals, selected_labels, selected_indices = select_evaluation_subset(
@@ -245,6 +294,7 @@ def run_latent_benchmark(config: BenchmarkConfig) -> pd.DataFrame:
                 pca_plot_show_arrows=config.pca_plot_show_arrows,
             )
             model_metrics["extractor_group"] = "model"
+            model_metrics["extractor_type"] = model_spec.extractor_type
             summary_rows.append(model_metrics)
 
         if config.evaluate_baselines:
@@ -256,6 +306,7 @@ def run_latent_benchmark(config: BenchmarkConfig) -> pd.DataFrame:
                 if config.cache_baselines_once_per_dataset_group and metrics_path.exists():
                     cached_metrics = _load_single_row_metrics(metrics_path)
                     cached_metrics["extractor_group"] = "baseline"
+                    cached_metrics["extractor_type"] = spec.extractor_type
                     summary_rows.append(cached_metrics)
                     continue
 
@@ -278,6 +329,7 @@ def run_latent_benchmark(config: BenchmarkConfig) -> pd.DataFrame:
                     pca_plot_show_arrows=config.pca_plot_show_arrows,
                 )
                 baseline_metrics["extractor_group"] = "baseline"
+                baseline_metrics["extractor_type"] = spec.extractor_type
                 summary_rows.append(baseline_metrics)
 
     summary_df = pd.DataFrame(summary_rows)
@@ -354,6 +406,7 @@ def _run_single_extractor(
 
     return evaluate_feature_set(
         model_name=spec.name,
+        extractor_type=spec.extractor_type,
         dataset_name=dataset_name,
         features=features,
         labels=labels,
@@ -369,6 +422,7 @@ def _run_single_extractor(
 
 def evaluate_feature_set(
     model_name: str,
+    extractor_type: str,
     dataset_name: str,
     features: np.ndarray,
     labels: np.ndarray,
@@ -386,6 +440,8 @@ def evaluate_feature_set(
     ----------
     model_name : str
         Benchmark row name.
+    extractor_type : str
+        Feature extractor type identifier.
     dataset_name : str
         Evaluation dataset identifier.
     features : np.ndarray
@@ -501,6 +557,7 @@ def evaluate_feature_set(
     nested_std = float(outer_df["outer_accuracy"].std(ddof=0))
     metrics = {
         "model_name": model_name,
+        "extractor_type": extractor_type,
         "evaluation_dataset": dataset_name,
         "samples": float(features.shape[0]),
         "test_samples": float(features.shape[0]),
@@ -985,37 +1042,32 @@ def select_balanced_binary_indices(labels: np.ndarray, total_samples: int) -> np
     return np.concatenate(selected_parts).astype(np.int64)
 
 
-def load_signal_tensor(path: str) -> np.ndarray:
+def load_signal_tensor(
+    path: str,
+    subsample_size: int | None = None,
+    subsample_seed: int = DEFAULT_SUBSAMPLE_SEED,
+) -> np.ndarray:
     """Load and validate EEG tensor with shape (samples, timesteps, channels).
 
     Parameters
     ----------
     path : str
         Path to ``.pt`` tensor file.
+    subsample_size : int | None, optional
+        Optional number of samples to keep from axis 0.
+    subsample_seed : int, optional
+        Random seed used for deterministic subsampling.
 
     Returns
     -------
     np.ndarray
         Signal array in float64.
     """
-    if not os.path.exists(path):
-        raise FileNotFoundError(f"Signal file '{path}' does not exist.")
-
-    tensor = torch.load(path, map_location="cpu", weights_only=False)
-    if not isinstance(tensor, torch.Tensor):
-        raise TypeError(
-            f"Expected a torch.Tensor in '{path}', but got type '{type(tensor).__name__}'."
-        )
-
-    if tensor.ndim == 2:
-        tensor = tensor.unsqueeze(-1)
-
-    if tensor.ndim != 3:
-        raise ValueError(
-            "Expected signal tensor with 2 or 3 dimensions and channel-last layout, "
-            f"but got shape {tuple(tensor.shape)} from '{path}'."
-        )
-
+    tensor = load_signal_samples_pt(
+        path=path,
+        subsample_size=subsample_size,
+        subsample_seed=subsample_seed,
+    )
     array = tensor.detach().cpu().numpy().astype(np.float64)
     if not np.all(np.isfinite(array)):
         raise ValueError(f"Signal tensor at '{path}' contains non-finite values.")
